@@ -4,4 +4,7 @@ version = "0.0.1"
 description = "Internal AI assistant for engineers"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "fastapi[standard]>=0.139.2",
+    "pydantic-settings>=2.14.2",
+]
