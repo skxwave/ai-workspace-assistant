@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+import json
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from langchain.messages import HumanMessage
 
@@ -36,3 +38,45 @@ async def chat_stream(
         event_generator(),
         media_type="text/event-stream",
     )
+
+
+@router.websocket("/ws/{thread_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    thread_id: str,
+):
+    await websocket.accept()
+
+    config = {"configurable": {"thread_id": thread_id}}
+
+    try:
+        while True:
+            raw_data = await websocket.receive_text()
+            data = json.loads(raw_data)
+            user_message = data.get("message", "")
+
+            if not user_message:
+                continue
+
+            input = {"messages": [HumanMessage(user_message)]}
+
+            async for chunk in agent.astream(
+                input,
+                config,
+                stream_mode="messages",
+                version="v2",
+            ):
+                msg, _ = chunk["data"]
+                await websocket.send_json(
+                    {
+                        "content": msg.content,
+                    }
+                )
+
+            await websocket.send_json({"type": "end"})
+    except WebSocketDisconnect:
+        # TODO: change to logger
+        print(f"Client disconnected from thread: {thread_id}")
+    except Exception as e:
+        print(f"Error occurred: {str(e)}")
+        await websocket.close()
