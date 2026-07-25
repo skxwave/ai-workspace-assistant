@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
+from langchain.messages import HumanMessage
 
+from backend.agent.agent import agent
+from backend.api.schemas import ChatRequest
 from backend.core import settings
 
 
@@ -22,3 +25,11 @@ app = FastAPI(
 @app.get("/health", tags=["Health"])
 async def health():
     return {"health": "ok"}
+
+
+@app.post("/chat", tags=["Chat"])
+async def chat(
+    request: ChatRequest,
+):
+    messages = [HumanMessage(content=request.message)]
+    return {"message": await agent.ainvoke({"messages": messages})}
