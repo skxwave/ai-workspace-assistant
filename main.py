@@ -1,10 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Body, FastAPI
-from langchain.messages import HumanMessage
+from fastapi import FastAPI
 
-from backend.agent.agent import agent
-from backend.api.schemas import ChatRequest
+from backend.api.chat import router as chat_router
 from backend.core import settings
 
 
@@ -21,15 +19,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Routers
+app.include_router(
+    router=chat_router,
+    prefix="/chat",
+)
+
 
 @app.get("/health", tags=["Health"])
 async def health():
     return {"health": "ok"}
-
-
-@app.post("/chat", tags=["Chat"])
-async def chat(
-    request: ChatRequest,
-):
-    messages = [HumanMessage(content=request.message)]
-    return {"message": await agent.ainvoke({"messages": messages})}
