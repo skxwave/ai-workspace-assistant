@@ -4,9 +4,9 @@ services:
     container_name: db
     restart: always
     environment:
-      - POSTGRES_DB=${DB_NAME}
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${BOT__DB__POSTGRES__DB}
+      - POSTGRES_USER=${BOT__DB__POSTGRES__USER}
+      - POSTGRES_PASSWORD=${BOT__DB__POSTGRES__PASSWORD}
     env_file:
       - .env
     ports:
@@ -32,7 +32,7 @@ services:
       - "6333:6333"  # HTTP
       - "6334:6334"  # gRPC
     environment:
-      - QDRANT__SERVICE__API_KEY=${QDRANT_KEY}
+      - QDRANT__SERVICE__API_KEY=${BOT__DB__QDRANT__KEY}
     env_file:
       - .env
     volumes:
