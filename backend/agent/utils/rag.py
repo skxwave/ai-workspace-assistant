@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from langchain_qdrant import QdrantVectorStore
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from qdrant_client import QdrantClient
@@ -35,3 +37,8 @@ vector_store = QdrantVectorStore(
     collection_name=settings.db.qdrant.collection_name,
     embedding=embeddings,
 )
+
+
+@lru_cache(maxsize=1)
+def _get_retriever():
+    return vector_store.as_retriever(search_kwargs={"k": 3})
