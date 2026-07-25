@@ -10,24 +10,32 @@ from .schemas import ChatRequest
 router = APIRouter(tags=["Chat"])
 
 
-@router.post("/invoke")
+@router.post("/invoke/{thread_id}")
 async def chat_invoke(
     request: ChatRequest,
+    thread_id: str,
 ):
-    messages = [HumanMessage(content=request.message)]
-    return {"message": await agent.ainvoke({"messages": messages})}
+    config = {"configurable": {"thread_id": thread_id}}
+    input = {"messages": [HumanMessage(content=request.message)]}
+    messages = await agent.ainvoke(
+        input=input,
+        config=config,
+    )
+    return {"message": messages["messages"][-1].content}
 
 
-@router.post("/stream")
+@router.post("/stream/{thread_id}")
 async def chat_stream(
     request: ChatRequest,
+    thread_id: str,
 ):
-    messages = [HumanMessage(content=request.message)]
-    input = {"messages": messages}
+    config = {"configurable": {"thread_id": thread_id}}
+    input = {"messages": [HumanMessage(content=request.message)]}
 
     async def event_generator():
         async for chunk in agent.astream(
             input=input,
+            config=config,
             stream_mode="messages",
             version="v2",
         ):
@@ -61,8 +69,8 @@ async def websocket_endpoint(
             input = {"messages": [HumanMessage(user_message)]}
 
             async for chunk in agent.astream(
-                input,
-                config,
+                input=input,
+                config=config,
                 stream_mode="messages",
                 version="v2",
             ):

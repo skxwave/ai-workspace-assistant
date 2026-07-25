@@ -2,6 +2,10 @@ from pydantic import BaseModel
 from pydantic_settings import SettingsConfigDict, BaseSettings
 
 
+class Agent(BaseModel):
+    is_in_memory: bool = True
+
+
 class LLMs(BaseModel):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_gpt_4o_mini: str = "openai/gpt-4o-mini"
@@ -17,6 +21,7 @@ class App(BaseModel):
 
 class Settings(BaseSettings):
     app: App = App()
+    agent: Agent = Agent()
     llms: LLMs
 
     model_config = SettingsConfigDict(
