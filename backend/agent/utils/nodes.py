@@ -6,6 +6,7 @@ from .llms import openai_llm
 
 
 async def chat_node(state: MessagesState) -> dict:
+    # TODO: trim messages properly
     return {
         "messages": [
             await openai_llm.ainvoke(

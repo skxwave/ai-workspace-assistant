@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from backend.api.chat import router as chat_router
 from backend.core import settings
+from backend.agent.memory.checkpointer import connection_pool
 from backend.agent.utils.rag import init_collection_if_not_exists
 
 
@@ -12,7 +13,12 @@ async def lifespan(app: FastAPI):
     # Initialize Qdrant collection
     await init_collection_if_not_exists()
 
+    # Open the Postgres checkpointer pool now that the event loop is running
+    await connection_pool.open()
+
     yield
+
+    await connection_pool.close()
 
 
 app = FastAPI(

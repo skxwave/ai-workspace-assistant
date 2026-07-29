@@ -1,10 +1,12 @@
 import json
+from typing import Annotated
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from langchain.messages import HumanMessage
+from langgraph.graph.state import CompiledStateGraph
 
-from backend.agent.agent import agent
+from backend.agent.agent import get_agent
 from .schemas import ChatRequest
 
 router = APIRouter(tags=["Chat"])
@@ -14,6 +16,7 @@ router = APIRouter(tags=["Chat"])
 async def chat_invoke(
     request: ChatRequest,
     thread_id: str,
+    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
 ):
     config = {"configurable": {"thread_id": thread_id}}
     input = {"messages": [HumanMessage(content=request.message)]}
@@ -28,6 +31,7 @@ async def chat_invoke(
 async def chat_stream(
     request: ChatRequest,
     thread_id: str,
+    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
 ):
     config = {"configurable": {"thread_id": thread_id}}
     input = {"messages": [HumanMessage(content=request.message)]}
@@ -52,6 +56,7 @@ async def chat_stream(
 async def websocket_endpoint(
     websocket: WebSocket,
     thread_id: str,
+    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
 ):
     await websocket.accept()
 
