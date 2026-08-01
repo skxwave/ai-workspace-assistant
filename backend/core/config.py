@@ -6,6 +6,10 @@ class Agent(BaseModel):
     is_in_memory: bool = True
 
 
+class Tools(BaseModel):
+    github_pat: str
+
+
 class LLMs(BaseModel):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_gpt_4o_mini: str = "4o-mini"
@@ -46,6 +50,7 @@ class Settings(BaseSettings):
     agent: Agent = Agent()
     db: DB
     llms: LLMs
+    tools: Tools
 
     model_config = SettingsConfigDict(
         env_prefix="BOT__",

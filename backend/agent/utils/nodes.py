@@ -1,9 +1,10 @@
 from langchain_core.messages import RemoveMessage, SystemMessage, trim_messages
+from langchain_core.runnables import Runnable
 from langgraph.graph import END
 
 from backend.agent.utils.state import MessagesState
 
-from .llms import openai_llm, openai_llm_chain, summarize_llm
+from .llms import openai_llm, summarize_llm
 
 trimmer = trim_messages(
     max_tokens=2000,
@@ -15,10 +16,13 @@ trimmer = trim_messages(
 )
 
 
-async def chat_node(state: MessagesState) -> dict:
-    trimmed_messages = await trimmer.ainvoke(state["messages"])
-    response = await openai_llm_chain.ainvoke({"messages": trimmed_messages})
-    return {"messages": [response]}
+def make_chat_node(llm_chain: Runnable):
+    async def chat_node(state: MessagesState) -> dict:
+        trimmed_messages = await trimmer.ainvoke(state["messages"])
+        response = await llm_chain.ainvoke({"messages": trimmed_messages})
+        return {"messages": [response]}
+
+    return chat_node
 
 
 async def summarize_node(state: MessagesState) -> dict:

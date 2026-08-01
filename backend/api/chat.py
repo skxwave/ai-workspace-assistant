@@ -24,7 +24,10 @@ async def chat_invoke(
         input=input,
         config=config,
     )
-    return {"message": messages["messages"][-1].content}
+    return {
+        "message": messages["messages"][-1].content,
+        "state": await agent.aget_state(config=config),
+    }
 
 
 @router.post("/stream/{thread_id}")
