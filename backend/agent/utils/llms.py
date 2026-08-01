@@ -19,7 +19,7 @@ def _openai_llm(
     )
 
 
-openai_llm = _openai_llm(settings.llms.openai_gpt_5_mini)
+openai_llm = _openai_llm(settings.llms.openai_gpt_5_4)
 summarize_llm = _openai_llm(settings.llms.openai_gpt_5_mini)
 
 

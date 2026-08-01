@@ -1,4 +1,4 @@
-from langchain_core.messages import RemoveMessage, SystemMessage, ToolMessage, trim_messages
+from langchain_core.messages import AIMessage, RemoveMessage, SystemMessage, ToolMessage, trim_messages
 from langchain_core.runnables import Runnable
 from langgraph.graph import END
 
@@ -7,7 +7,7 @@ from backend.agent.utils.state import MessagesState
 from .llms import openai_llm, summarize_llm
 
 trimmer = trim_messages(
-    max_tokens=2000,
+    max_tokens=16000,
     strategy="last",
     token_counter=openai_llm,
     include_system=True,
@@ -19,6 +19,13 @@ trimmer = trim_messages(
 def make_chat_node(llm_chain: Runnable):
     async def chat_node(state: MessagesState) -> dict:
         trimmed_messages = await trimmer.ainvoke(state["messages"])
+
+        summary = state.get("summary", "")
+        if summary:
+            trimmed_messages = [
+                SystemMessage(content=f"Summary of earlier conversation:\n{summary}")
+            ] + trimmed_messages
+
         response = await llm_chain.ainvoke({"messages": trimmed_messages})
         return {"messages": [response]}
 
@@ -58,6 +65,12 @@ async def summarize_node(state: MessagesState) -> dict:
 
 
 def should_summarize(state: MessagesState):
-    if len(state["messages"]) > 10:
+    messages = state["messages"]
+    last_message = messages[-1]
+
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return END
+
+    if len(messages) > 20:
         return "summarize_node"
     return END
