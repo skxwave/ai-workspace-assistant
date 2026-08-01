@@ -8,7 +8,7 @@ class Agent(BaseModel):
 
 class LLMs(BaseModel):
     openai_base_url: str = "https://api.openai.com/v1"
-    openai_gpt_4o_mini: str = "openai/gpt-4o-mini"
+    openai_gpt_4o_mini: str = "4o-mini"
     openai_gpt_5_mini: str = "gpt-5-mini"
     openai_api_key: str
 
