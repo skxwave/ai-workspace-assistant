@@ -1,4 +1,4 @@
-from langchain_core.messages import RemoveMessage, SystemMessage, trim_messages
+from langchain_core.messages import RemoveMessage, SystemMessage, ToolMessage, trim_messages
 from langchain_core.runnables import Runnable
 from langgraph.graph import END
 
@@ -32,6 +32,11 @@ async def summarize_node(state: MessagesState) -> dict:
     if len(messages) < 10:
         return {}
 
+    cut = min(6, len(messages))
+    while cut < len(messages) and isinstance(messages[cut], ToolMessage):
+        cut += 1
+    messages_to_summarize = messages[:cut]
+
     if summary:
         summary_prompt = (
             f"Here is previous summary of chat: {summary}\n\n"
@@ -41,10 +46,10 @@ async def summarize_node(state: MessagesState) -> dict:
         summary_prompt = "Create short concise summary from this chat history:"
 
     response = await summarize_llm.ainvoke(
-        [SystemMessage(content=summary_prompt)] + messages[:6]
+        [SystemMessage(content=summary_prompt)] + messages_to_summarize
     )
     new_summary = response.content
-    delete_messages = [RemoveMessage(id=m.id) for m in messages[:6] if m.id]
+    delete_messages = [RemoveMessage(id=m.id) for m in messages_to_summarize if m.id]
 
     return {
         "summary": new_summary,
