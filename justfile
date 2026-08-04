@@ -6,3 +6,9 @@ infra state="up -d":
 
 seed-db:
     uv run scripts/seed_db.py
+
+makemigrations message="":
+    uv run alembic revision --autogenerate -m "{{message}}"
+
+migrate to="head":
+    uv run alembic upgrade {{to}}
