@@ -27,7 +27,6 @@ async def search_my_uploads(query: str) -> str:
     results = await vector_store.asimilarity_search(
         query,
         k=3,
-        score_threshold=0.5,
         filter=Filter(
             must=[FieldCondition(key="metadata.owner_id", match=MatchValue(value=thread_id))]
         ),

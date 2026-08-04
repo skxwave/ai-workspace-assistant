@@ -46,10 +46,9 @@ vector_store = QdrantVectorStore(
 @lru_cache(maxsize=1)
 def _get_retriever():
     return vector_store.as_retriever(
-        search_type="similarity_score_threshold",
+        search_type="similarity",
         search_kwargs={
             "k": 3,
-            "score_threshold": 0.5,
             "filter": Filter(
                 must=[
                     FieldCondition(

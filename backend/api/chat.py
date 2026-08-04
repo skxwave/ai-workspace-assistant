@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
-from langchain.messages import HumanMessage
+from langchain.messages import HumanMessage, SystemMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.agent.agent import get_agent
@@ -58,6 +58,7 @@ async def clear_chat(
 @router.post("/documents", status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile,
+    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ):
     extension = Path(file.filename).suffix.lower()
@@ -87,6 +88,24 @@ async def upload_document(
         document_id=str(uuid.uuid4()),
     )
     await vector_store.aadd_documents(chunks)
+
+    # the model shouldn't have to blindly guess an upload happened before it tries search_my_uploads
+    config = {"configurable": {"thread_id": current_user.id}}
+    await agent.aupdate_state(
+        config,
+        {
+            "messages": [
+                SystemMessage(
+                    content=(
+                        f"The user just uploaded '{file.filename}' "
+                        f"({len(chunks)} chunks indexed). Use search_my_uploads "
+                        "to answer questions about it."
+                    )
+                )
+            ]
+        },
+    )
+
     return {"filename": file.filename, "chunks_indexed": len(chunks)}
 
 
