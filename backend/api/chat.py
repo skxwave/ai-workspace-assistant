@@ -1,7 +1,7 @@
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
 from langchain.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
@@ -31,6 +31,14 @@ async def chat_invoke(
         # Added state for debug. TODO: remove if not needed
         "state": await agent.aget_state(config=config),
     }
+
+
+@router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_chat(
+    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+):
+    await agent.checkpointer.adelete_thread(str(current_user.id))
 
 
 @router.post("/stream")
