@@ -3,8 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from backend.agent.agent import compile_graph
+from backend.api.auth import router as auth_router
 from backend.api.chat import router as chat_router
 from backend.core import settings
+from backend.core.db import engine as db_engine
+from backend.core.redis import redis_client
 from backend.agent.memory.checkpointer import connection_pool
 from backend.agent.utils.rag import init_collection_if_not_exists
 
@@ -23,6 +26,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    await redis_client.aclose()
+    await db_engine.dispose()
     await connection_pool.close()
 
 
@@ -38,6 +43,10 @@ app = FastAPI(
 app.include_router(
     router=chat_router,
     prefix="/chat",
+)
+app.include_router(
+    router=auth_router,
+    prefix="/auth",
 )
 
 

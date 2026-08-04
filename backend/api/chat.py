@@ -7,18 +7,20 @@ from langchain.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.agent.agent import get_agent
+from backend.auth.dependencies import get_current_active_user
+from backend.core.models.user import User
 from .schemas import ChatRequest
 
 router = APIRouter(tags=["Chat"])
 
 
-@router.post("/invoke/{thread_id}")
+@router.post("/invoke")
 async def chat_invoke(
     request: ChatRequest,
-    thread_id: str,
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ):
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": current_user.id}}
     input = {"messages": [HumanMessage(content=request.message)]}
     messages = await agent.ainvoke(
         input=input,
@@ -26,17 +28,18 @@ async def chat_invoke(
     )
     return {
         "message": messages["messages"][-1].content,
+        # Added state for debug. TODO: remove if not needed
         "state": await agent.aget_state(config=config),
     }
 
 
-@router.post("/stream/{thread_id}")
+@router.post("/stream")
 async def chat_stream(
     request: ChatRequest,
-    thread_id: str,
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ):
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": current_user.id}}
     input = {"messages": [HumanMessage(content=request.message)]}
 
     async def event_generator():
@@ -55,15 +58,15 @@ async def chat_stream(
     )
 
 
-@router.websocket("/ws/{thread_id}")
+@router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    thread_id: str,
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ):
     await websocket.accept()
 
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": current_user.id}}
 
     try:
         while True:
@@ -92,7 +95,7 @@ async def websocket_endpoint(
             await websocket.send_json({"type": "end"})
     except WebSocketDisconnect:
         # TODO: change to logger
-        print(f"Client disconnected from thread: {thread_id}")
+        print(f"Client disconnected from thread: {current_user.id}")
     except Exception as e:
         print(f"Error occurred: {str(e)}")
         await websocket.close()

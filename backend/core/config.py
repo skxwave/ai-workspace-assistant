@@ -41,14 +41,28 @@ class Postgres(BaseModel):
     port: int = 5432
 
 
+class Redis(BaseModel):
+    host: str = "localhost"
+    port: int = 6379
+
+
 class DB(BaseModel):
     qdrant: Qdrant
     postgres: Postgres
+    redis: Redis = Redis()
+
+
+class Auth(BaseModel):
+    secret_key: str
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 30
 
 
 class Settings(BaseSettings):
     app: App = App()
     agent: Agent = Agent()
+    auth: Auth
     db: DB
     llms: LLMs
     tools: Tools
