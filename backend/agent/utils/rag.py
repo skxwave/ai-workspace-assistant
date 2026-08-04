@@ -2,8 +2,8 @@ from functools import lru_cache
 
 from langchain_qdrant import QdrantVectorStore
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
+from qdrant_client import AsyncQdrantClient, QdrantClient
+from qdrant_client.http.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
 
 from backend.core import settings
 
@@ -12,6 +12,10 @@ embeddings = FastEmbedEmbeddings(
 )
 
 sync_client = QdrantClient(
+    url=settings.db.qdrant.url,
+    api_key=settings.db.qdrant.key,
+)
+async_client = AsyncQdrantClient(
     url=settings.db.qdrant.url,
     api_key=settings.db.qdrant.key,
 )
@@ -43,5 +47,15 @@ vector_store = QdrantVectorStore(
 def _get_retriever():
     return vector_store.as_retriever(
         search_type="similarity_score_threshold",
-        search_kwargs={"k": 3, "score_threshold": 0.5},
+        search_kwargs={
+            "k": 3,
+            "score_threshold": 0.5,
+            "filter": Filter(
+                must=[
+                    FieldCondition(
+                        key="metadata.source_type", match=MatchValue(value="knowledge_base")
+                    )
+                ]
+            ),
+        },
     )

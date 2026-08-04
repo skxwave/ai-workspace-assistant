@@ -2,17 +2,41 @@ import asyncio
 import random
 
 import httpx
-from langchain_core.tools import create_retriever_tool
+from langchain_core.tools import create_retriever_tool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.config import get_config
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
-from backend.agent.utils.rag import _get_retriever
+from backend.agent.utils.rag import _get_retriever, vector_store
 from backend.core import settings
 
-rag_tool = create_retriever_tool(
+knowledge_base_tool = create_retriever_tool(
     retriever=_get_retriever(),
     name="search_knowledge_base",
-    description="Search the internal knowledge base for official internal documents, policies, and instructions. Only use this when the question is specifically about internal docs/policies that can't be answered from other tools or the current conversation.",
+    description="Search the internal knowledge base for official internal documents, policies, and instructions. Use this for general company/org-wide knowledge — not for files the user has personally uploaded to this conversation (use search_my_uploads for those).",
 )
+
+
+@tool
+async def search_my_uploads(query: str) -> str:
+    """Search files the current user has uploaded to this conversation. Use this
+    when the question refers to something like "my file", "the document I
+    uploaded", or "the PDF I attached" — not for general company knowledge
+    (use search_knowledge_base for that)."""
+    thread_id = str(get_config()["configurable"]["thread_id"])
+    results = await vector_store.asimilarity_search(
+        query,
+        k=3,
+        score_threshold=0.5,
+        filter=Filter(
+            must=[FieldCondition(key="metadata.owner_id", match=MatchValue(value=thread_id))]
+        ),
+    )
+    if not results:
+        return "No relevant results found."
+    return "\n\n".join(
+        f"[{doc.metadata.get('filename', 'uploaded file')}] {doc.page_content}" for doc in results
+    )
 
 
 class RetryOn429Interceptor:
@@ -54,4 +78,4 @@ mcp_client = MultiServerMCPClient(
 
 async def get_tools_list() -> list:
     mcp_tools = await mcp_client.get_tools()
-    return [rag_tool, *mcp_tools]
+    return [knowledge_base_tool, search_my_uploads, *mcp_tools]

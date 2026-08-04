@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_qdrant import QdrantVectorStore
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 
@@ -48,8 +47,16 @@ def seed_initial_docs():
         print("No PDF files in folder")
         return
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    chunks = text_splitter.split_documents(raw_docs)
+    # imported lazily, cuz it must happen after create_collection() above, not at module import time
+    from backend.agent.utils.ingestion import chunk_documents
+
+    chunks = chunk_documents(
+        raw_docs,
+        owner_id=None,
+        filename=None,
+        source_type="knowledge_base",
+        document_id=None,
+    )
 
     vector_store = QdrantVectorStore(
         client=sync_client,
