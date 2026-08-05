@@ -8,18 +8,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.db import get_db
-from backend.core.models.user import User
-
-from .blacklist import blacklist_token, is_blacklisted
-from .schemas import TokenPair
-from .security import (
+from backend.auth.blacklist import blacklist_token, is_blacklisted
+from backend.auth.schemas import TokenPair
+from backend.auth.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
     hash_password,
     verify_password,
 )
+from backend.core.db import get_db
+from backend.core.models.user import User
 
 credentials_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,

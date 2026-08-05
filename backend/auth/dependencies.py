@@ -5,10 +5,10 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
 from backend.core.models.user import User
+from backend.core.services.auth import AuthService, credentials_exception, get_auth_service
 
 from .blacklist import is_blacklisted
 from .security import decode_token
-from .service import AuthService, credentials_exception, get_auth_service
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 

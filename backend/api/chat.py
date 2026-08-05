@@ -1,14 +1,9 @@
 import json
-import os
-import tempfile
-from pathlib import Path
 from typing import Annotated
-from uuid import uuid4
 
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Query,
     UploadFile,
     WebSocket,
@@ -16,70 +11,37 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from langchain.messages import HumanMessage
-from langgraph.graph.state import CompiledStateGraph
 
-from backend.agent.agent import get_agent
-from backend.agent.utils.ingestion import (
-    chunk_documents,
-    delete_owner_documents,
-    get_loader,
-    supported_extensions,
-)
-from backend.agent.utils.rag import vector_store
 from backend.auth.dependencies import get_current_active_user
-from backend.core.constants import MessageRole
 from backend.core.models.user import User
-from backend.core.repositories import ChatMessageRepository, get_chat_message_repository
+from backend.core.services import ChatService, get_chat_service
 from .schemas import ChatRequest, MessageOut, MessagesPage
 
 router = APIRouter(tags=["Chat"])
-
-MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
 @router.post("/invoke")
 async def chat_invoke(
     request: ChatRequest,
-    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    config = {"configurable": {"thread_id": current_user.id}}
-    input = {
-        "messages": [HumanMessage(content=request.message)],
-        "attached_file_ids": request.attached_file_ids,
-    }
-    await messages_repo.save(
+    reply = await chat_service.send_message(
         owner_id=current_user.id,
-        role=MessageRole.HUMAN,
-        content=request.message,
+        message=request.message,
+        attached_file_ids=request.attached_file_ids,
     )
-    messages = await agent.ainvoke(
-        input=input,
-        config=config,
-    )
-    reply = messages["messages"][-1].content
-    await messages_repo.save(
-        owner_id=current_user.id,
-        role=MessageRole.AI,
-        content=reply,
-    )
-    return {
-        "message": reply,
-        # Added state for debug. TODO: remove if not needed
-        # "state": await agent.aget_state(config=config),
-    }
+    return {"message": reply}
 
 
 @router.get("/messages", response_model=MessagesPage)
 async def get_messages(
     current_user: Annotated[User, Depends(get_current_active_user)],
-    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
-    messages, total = await messages_repo.list_for_owner(
+    messages, total = await chat_service.get_history(
         owner_id=current_user.id,
         limit=limit,
         offset=offset,
@@ -98,93 +60,34 @@ async def get_messages(
 
 @router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
 async def clear_chat(
-    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    await agent.checkpointer.adelete_thread(str(current_user.id))
-    await delete_owner_documents(str(current_user.id))
-    await messages_repo.delete_for_owner(owner_id=current_user.id)
+    await chat_service.clear(owner_id=current_user.id)
 
 
 @router.post("/documents", status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile,
     current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    extension = Path(file.filename).suffix.lower()
-    if extension not in supported_extensions():
-        raise HTTPException(
-            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            f"Unsupported file type. Supported: {sorted(supported_extensions())}",
-        )
-
-    contents = await file.read()
-    if len(contents) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
-
-    with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as tmp:
-        tmp.write(contents)
-        tmp_path = tmp.name
-    try:
-        docs = get_loader(extension)(tmp_path)
-    finally:
-        os.unlink(tmp_path)
-
-    file_id = str(uuid4())
-    chunks = chunk_documents(
-        docs,
-        owner_id=str(current_user.id),
-        filename=file.filename,
-        source_type="chat_upload",
-        file_id=file_id,
-    )
-    await vector_store.aadd_documents(chunks)
-
-    return {
-        "file_id": file_id,
-        "filename": file.filename,
-        "chunks_indexed": len(chunks),
-    }
+    return await chat_service.upload_document(owner_id=current_user.id, file=file)
 
 
 @router.post("/stream")
 async def chat_stream(
     request: ChatRequest,
-    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    config = {"configurable": {"thread_id": current_user.id}}
-    input = {
-        "messages": [HumanMessage(content=request.message)],
-        "attached_file_ids": request.attached_file_ids,
-    }
-    await messages_repo.save(
-        owner_id=current_user.id,
-        role=MessageRole.HUMAN,
-        content=request.message,
-    )
-
     async def event_generator():
-        reply_chunks = []
-        async for chunk in agent.astream(
-            input=input,
-            config=config,
-            stream_mode="messages",
-            version="v2",
+        async for content in chat_service.stream_message(
+            owner_id=current_user.id,
+            message=request.message,
+            attached_file_ids=request.attached_file_ids,
         ):
-            msg, _ = chunk["data"]
-            reply_chunks.append(msg.content)
-            yield f"{msg.content}"
-
-        reply = "".join(reply_chunks)
-        if reply:
-            await messages_repo.save(
-                owner_id=current_user.id,
-                role=MessageRole.AI,
-                content=reply,
-            )
+            yield content
 
     return StreamingResponse(
         event_generator(),
@@ -195,13 +98,10 @@ async def chat_stream(
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
     await websocket.accept()
-
-    config = {"configurable": {"thread_id": current_user.id}}
 
     try:
         while True:
@@ -213,38 +113,12 @@ async def websocket_endpoint(
             if not user_message:
                 continue
 
-            input = {
-                "messages": [HumanMessage(user_message)],
-                "attached_file_ids": attached_file_ids,
-            }
-            await messages_repo.save(
+            async for content in chat_service.stream_message(
                 owner_id=current_user.id,
-                role=MessageRole.HUMAN,
-                content=user_message,
-            )
-
-            reply_chunks = []
-            async for chunk in agent.astream(
-                input=input,
-                config=config,
-                stream_mode="messages",
-                version="v2",
+                message=user_message,
+                attached_file_ids=attached_file_ids,
             ):
-                msg, _ = chunk["data"]
-                reply_chunks.append(msg.content)
-                await websocket.send_json(
-                    {
-                        "content": msg.content,
-                    }
-                )
-
-            reply = "".join(reply_chunks)
-            if reply:
-                await messages_repo.save(
-                    owner_id=current_user.id,
-                    role=MessageRole.AI,
-                    content=reply,
-                )
+                await websocket.send_json({"content": content})
 
             await websocket.send_json({"type": "end"})
     except WebSocketDisconnect:

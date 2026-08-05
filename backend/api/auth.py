@@ -5,8 +5,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from backend.auth.dependencies import get_current_active_user, oauth2_scheme
 from backend.auth.schemas import RefreshRequest, TokenPair, UserCreate, UserRead
-from backend.auth.service import AuthService, get_auth_service
 from backend.core.models.user import User
+from backend.core.services import AuthService, get_auth_service
 
 router = APIRouter(tags=["Auth"])
 
@@ -20,7 +20,11 @@ async def register(
     payload: UserCreate,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ):
-    user = await auth_service.register_user(payload.email, payload.password, payload.full_name)
+    user = await auth_service.register_user(
+        payload.email,
+        payload.password,
+        payload.full_name,
+    )
     return auth_service.issue_token_pair(user)
 
 
@@ -29,7 +33,10 @@ async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ):
-    user = await auth_service.authenticate_user(form_data.username, form_data.password)
+    user = await auth_service.authenticate_user(
+        form_data.username,
+        form_data.password,
+    )
     return auth_service.issue_token_pair(user)
 
 
