@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, UploadFile, status
 from langchain.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
-from backend.agent.agent import get_agent
+from backend.agent.agent import build_agent
 from backend.agent.utils.ingestion import (
     chunk_documents,
     delete_owner_documents,
@@ -17,6 +17,7 @@ from backend.agent.utils.ingestion import (
     supported_extensions,
 )
 from backend.agent.utils.rag import vector_store
+from backend.agent.utils.tools import get_tools_list
 from backend.core.constants import MAX_UPLOAD_SIZE, MessageRole
 from backend.core.models.message import ChatMessage
 from backend.core.repositories import ChatMessageRepository, get_chat_message_repository
@@ -156,10 +157,11 @@ class ChatService:
         return await self.agent.aget_state(config=self._config(owner_id))
 
 
-def get_chat_service(
-    agent: Annotated[CompiledStateGraph, Depends(get_agent)],
+async def get_chat_service(
     messages_repo: Annotated[
         ChatMessageRepository, Depends(get_chat_message_repository)
     ],
 ) -> ChatService:
+    tools = await get_tools_list()
+    agent = await build_agent(tools)
     return ChatService(agent=agent, messages_repo=messages_repo)

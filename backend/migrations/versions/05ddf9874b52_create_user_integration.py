@@ -1,8 +1,8 @@
-"""create user integration model
+"""create user integration
 
-Revision ID: 738c5e4ca017
+Revision ID: 05ddf9874b52
 Revises: 8feb24aeb1d6
-Create Date: 2026-08-05 23:37:31.117082
+Create Date: 2026-08-06 00:22:03.317069
 
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = "738c5e4ca017"
+revision: str = "05ddf9874b52"
 down_revision: Union[str, Sequence[str], None] = "8feb24aeb1d6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -24,7 +24,12 @@ def upgrade() -> None:
     op.create_table(
         "user_integrations",
         sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("github_access_token", sa.String(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     # ### end Alembic commands ###

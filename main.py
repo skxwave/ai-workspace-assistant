@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.agent.agent import compile_graph
 from backend.api.auth import router as auth_router
 from backend.api.chat import router as chat_router
 from backend.core import settings
@@ -19,10 +18,6 @@ async def lifespan(app: FastAPI):
 
     # Open the Postgres checkpointer pool now that the event loop is running
     await connection_pool.open()
-
-    # Build the agent graph (tools, LLM chain, checkpointer) once, now that
-    # the event loop and its dependent connections are ready
-    app.state.agent = await compile_graph()
 
     yield
 

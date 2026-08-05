@@ -15,3 +15,6 @@ makemigrations message="":
 
 migrate to="head":
     uv run alembic upgrade {{to}}
+
+downgrade to="-1":
+    uv run alembic downgrade {{to}}
