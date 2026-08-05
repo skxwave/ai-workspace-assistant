@@ -148,6 +148,13 @@ class ChatService:
             "chunks_indexed": len(chunks),
         }
 
+    async def graph_state(
+        self,
+        *,
+        owner_id: UUID,
+    ):
+        return await self.agent.aget_state(config=self._config(owner_id))
+
 
 def get_chat_service(
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],

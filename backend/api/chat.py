@@ -127,3 +127,12 @@ async def websocket_endpoint(
     except Exception as e:
         print(f"Error occurred: {str(e)}")
         await websocket.close()
+
+
+@router.get("/debug/state")
+async def graph_state(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+):
+    state = await chat_service.graph_state(owner_id=current_user.id)
+    return {"state": state}

@@ -1,10 +1,12 @@
 import asyncio
+import json
 import random
 
 import httpx
 from langchain_core.tools import create_retriever_tool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.config import get_config
+from mcp.types import CallToolResult, TextContent
 from qdrant_client.http.models import FieldCondition, Filter, MatchAny, MatchValue
 
 from backend.agent.utils.rag import _get_retriever, vector_store
@@ -71,6 +73,46 @@ class RetryOn429Interceptor:
                 await asyncio.sleep(delay)
 
 
+# GitHub's REST API responses include bookkeeping fields (sha, url, git_url,
+# html_url, download_url, _links) on every file/dir entry. The model never
+# references them, but they stay in message history until summarized away —
+# stripping them here keeps every subsequent turn's prompt smaller.
+_GITHUB_NOISE_FIELDS = {"sha", "url", "git_url", "html_url", "download_url", "_links"}
+
+
+def _strip_fields(value, fields: set[str]):
+    if isinstance(value, dict):
+        return {k: _strip_fields(v, fields) for k, v in value.items() if k not in fields}
+    if isinstance(value, list):
+        return [_strip_fields(item, fields) for item in value]
+    return value
+
+
+class GithubResponseTrimInterceptor:
+    """Strips GitHub API bookkeeping fields from `github` MCP tool results."""
+
+    async def __call__(self, request, handler):
+        result = await handler(request)
+        if request.server_name != "github" or not isinstance(result, CallToolResult):
+            return result
+
+        new_content = []
+        changed = False
+        for block in result.content:
+            if isinstance(block, TextContent):
+                try:
+                    data = json.loads(block.text)
+                except (json.JSONDecodeError, TypeError):
+                    new_content.append(block)
+                    continue
+                trimmed = _strip_fields(data, _GITHUB_NOISE_FIELDS)
+                block = block.model_copy(update={"text": json.dumps(trimmed, separators=(",", ":"))})
+                changed = True
+            new_content.append(block)
+
+        return result.model_copy(update={"content": new_content}) if changed else result
+
+
 mcp_client = MultiServerMCPClient(
     {
         "github": {
@@ -84,7 +126,7 @@ mcp_client = MultiServerMCPClient(
             "timeout": 30.0,
         },
     },
-    tool_interceptors=[RetryOn429Interceptor()],
+    tool_interceptors=[RetryOn429Interceptor(), GithubResponseTrimInterceptor()],
 )
 
 
