@@ -1,10 +1,10 @@
 from langchain_core.messages import AIMessage, RemoveMessage, SystemMessage, ToolMessage, trim_messages
-from langchain_core.runnables import Runnable
 from langgraph.graph import END
 
 from backend.agent.utils.state import MessagesState
+from backend.agent.utils.tools import get_tools_list
 
-from .llms import openai_llm, summarize_llm
+from .llms import openai_llm, summarize_llm, build_llm_chain, openai_llm
 
 trimmer = trim_messages(
     max_tokens=16000,
@@ -16,20 +16,29 @@ trimmer = trim_messages(
 )
 
 
-def make_chat_node(llm_chain: Runnable):
-    async def chat_node(state: MessagesState) -> dict:
-        trimmed_messages = await trimmer.ainvoke(state["messages"])
+async def chat_node(state: MessagesState) -> dict:
+    trimmed_messages = await trimmer.ainvoke(state["messages"])
 
-        summary = state.get("summary", "")
-        if summary:
-            trimmed_messages = [
-                SystemMessage(content=f"Summary of earlier conversation:\n{summary}")
-            ] + trimmed_messages
+    summary = state.get("summary", "")
+    if summary:
+        trimmed_messages = [
+            SystemMessage(content=f"Summary of earlier conversation:\n{summary}")
+        ] + trimmed_messages
 
-        response = await llm_chain.ainvoke({"messages": trimmed_messages})
-        return {"messages": [response]}
+    files = state.get("attached_file_ids", None)
+    if files:
+        trimmed_messages = [
+            SystemMessage(
+                content=f"User uploaded new files (ids: {files}), please use "
+                f"`search_user_files` with file_ids={files} to look them up."
+            )
+        ] + trimmed_messages
 
-    return chat_node
+    tools = await get_tools_list()
+    llm_chain = build_llm_chain(llm=openai_llm, tools=tools)
+
+    response = await llm_chain.ainvoke({"messages": trimmed_messages})
+    return {"messages": [response], "attached_file_ids": None}
 
 
 async def summarize_node(state: MessagesState) -> dict:

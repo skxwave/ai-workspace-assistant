@@ -44,7 +44,7 @@ def chunk_documents(
     owner_id: str | None,
     filename: str | None,
     source_type: str,
-    document_id: str | None,
+    file_id: str | None,
 ) -> list[Document]:
     chunks = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50).split_documents(docs)
     for chunk in chunks:
@@ -52,7 +52,7 @@ def chunk_documents(
             owner_id=owner_id,
             filename=filename,
             source_type=source_type,
-            document_id=document_id,
+            file_id=file_id,
         )
     return chunks
 

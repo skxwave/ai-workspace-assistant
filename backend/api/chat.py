@@ -1,13 +1,21 @@
 import json
 import os
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import StreamingResponse
-from langchain.messages import HumanMessage, SystemMessage
+from langchain.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.agent.agent import get_agent
@@ -34,7 +42,10 @@ async def chat_invoke(
     current_user: Annotated[User, Depends(get_current_active_user)],
 ):
     config = {"configurable": {"thread_id": current_user.id}}
-    input = {"messages": [HumanMessage(content=request.message)]}
+    input = {
+        "messages": [HumanMessage(content=request.message)],
+        "attached_file_ids": request.attached_file_ids,
+    }
     messages = await agent.ainvoke(
         input=input,
         config=config,
@@ -70,7 +81,7 @@ async def upload_document(
 
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large")
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
 
     with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as tmp:
         tmp.write(contents)
@@ -80,33 +91,17 @@ async def upload_document(
     finally:
         os.unlink(tmp_path)
 
+    file_id = str(uuid4())
     chunks = chunk_documents(
         docs,
         owner_id=str(current_user.id),
         filename=file.filename,
         source_type="chat_upload",
-        document_id=str(uuid.uuid4()),
+        file_id=file_id,
     )
     await vector_store.aadd_documents(chunks)
 
-    # the model shouldn't have to blindly guess an upload happened before it tries search_my_uploads
-    config = {"configurable": {"thread_id": current_user.id}}
-    await agent.aupdate_state(
-        config,
-        {
-            "messages": [
-                SystemMessage(
-                    content=(
-                        f"The user just uploaded '{file.filename}' "
-                        f"({len(chunks)} chunks indexed). Use search_my_uploads "
-                        "to answer questions about it."
-                    )
-                )
-            ]
-        },
-    )
-
-    return {"filename": file.filename, "chunks_indexed": len(chunks)}
+    return {"file_id": file_id, "filename": file.filename, "chunks_indexed": len(chunks)}
 
 
 @router.post("/stream")

@@ -5,7 +5,7 @@ import httpx
 from langchain_core.tools import create_retriever_tool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.config import get_config
-from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+from qdrant_client.http.models import FieldCondition, Filter, MatchAny, MatchValue
 
 from backend.agent.utils.rag import _get_retriever, vector_store
 from backend.core import settings
@@ -18,18 +18,31 @@ knowledge_base_tool = create_retriever_tool(
 
 
 @tool
-async def search_my_uploads(query: str) -> str:
-    """Search files the current user has uploaded to this conversation. Use this
-    when the question refers to something like "my file", "the document I
-    uploaded", or "the PDF I attached" — not for general company knowledge
-    (use search_knowledge_base for that)."""
+async def search_user_files(query: str, file_ids: list[str] | None = None) -> str:
+    """Search files uploaded by the user. 
+    Use this tool when the user asks questions about their uploaded documents.
+    
+    Arguments:
+        query: Search query phrase or keywords.
+        file_ids: Optional list of specific file IDs to search within. Leave empty to search all user files.
+    """
     thread_id = str(get_config()["configurable"]["thread_id"])
+    must_conditions = [
+        FieldCondition(key="metadata.owner_id", match=MatchValue(value=thread_id))
+    ]
+
+    if file_ids:
+        must_conditions.append(
+            FieldCondition(
+                key="metadata.file_id", 
+                match=MatchAny(any=file_ids)
+            )
+        )
+
     results = await vector_store.asimilarity_search(
         query,
-        k=3,
-        filter=Filter(
-            must=[FieldCondition(key="metadata.owner_id", match=MatchValue(value=thread_id))]
-        ),
+        k=4,
+        filter=Filter(must=must_conditions),
     )
     if not results:
         return "No relevant results found."
@@ -75,6 +88,16 @@ mcp_client = MultiServerMCPClient(
 )
 
 
+_tools_cache: list | None = None
+_tools_cache_lock = asyncio.Lock()
+
+
 async def get_tools_list() -> list:
-    mcp_tools = await mcp_client.get_tools()
-    return [knowledge_base_tool, search_my_uploads, *mcp_tools]
+    """Cached for the process lifetime so agent.py and chat_node share one tool list."""
+    global _tools_cache
+    if _tools_cache is None:
+        async with _tools_cache_lock:
+            if _tools_cache is None:
+                mcp_tools = await mcp_client.get_tools()
+                _tools_cache = [knowledge_base_tool, search_user_files, *mcp_tools]
+    return _tools_cache

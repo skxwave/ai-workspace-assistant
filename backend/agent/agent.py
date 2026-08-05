@@ -7,8 +7,7 @@ from langgraph.store.memory import InMemoryStore
 from backend.core import settings
 
 from .memory.checkpointer import get_checkpointer
-from .utils.llms import build_llm_chain, openai_llm
-from .utils.nodes import make_chat_node, summarize_node, should_summarize
+from .utils.nodes import chat_node, summarize_node, should_summarize
 from .utils.state import MessagesState
 from .utils.tools import get_tools_list
 
@@ -17,8 +16,6 @@ async def workflow():
     builder = StateGraph(MessagesState)
 
     tools = await get_tools_list()
-    chat_llm = build_llm_chain(openai_llm, tools)
-    chat_node = make_chat_node(chat_llm)
 
     # Nodes
     builder.add_node(chat_node)
