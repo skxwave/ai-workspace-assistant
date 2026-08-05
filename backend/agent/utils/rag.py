@@ -1,14 +1,16 @@
 from functools import lru_cache
 
 from langchain_qdrant import QdrantVectorStore
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from qdrant_client import AsyncQdrantClient, QdrantClient
 from qdrant_client.http.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
 
 from backend.core import settings
 
-embeddings = FastEmbedEmbeddings(
-    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+embeddings = OpenAIEmbeddings(
+    model=settings.llms.openai_embedding_model,
+    base_url=settings.llms.openai_base_url,
+    api_key=settings.llms.openai_api_key,
 )
 
 sync_client = QdrantClient(
@@ -25,10 +27,10 @@ async def init_collection_if_not_exists():
     collections = [col.name for col in sync_client.get_collections().collections]
 
     if settings.db.qdrant.collection_name not in collections:
-        # Size 384 for fastembed
+        # Size 1536 for OpenAI text-embedding-3-small
         sync_client.create_collection(
             collection_name=settings.db.qdrant.collection_name,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
         )
 
 
@@ -40,6 +42,8 @@ vector_store = QdrantVectorStore(
     client=sync_client,
     collection_name=settings.db.qdrant.collection_name,
     embedding=embeddings,
+    # pass if no collection; it will create it later (in lifespan)
+    validate_collection_config=False,
 )
 
 

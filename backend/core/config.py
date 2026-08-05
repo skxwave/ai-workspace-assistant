@@ -15,6 +15,7 @@ class LLMs(BaseModel):
     openai_gpt_4o_mini: str = "4o-mini"
     openai_gpt_5_mini: str = "gpt-5-mini"
     openai_gpt_5_4: str = "gpt-5.4"
+    openai_embedding_model: str = "text-embedding-3-small"
     openai_api_key: str
 
 

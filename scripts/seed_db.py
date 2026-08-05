@@ -5,15 +5,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
-from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 
 from backend.core import settings
 
-embeddings = FastEmbedEmbeddings(
-    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+embeddings = OpenAIEmbeddings(
+    model=settings.llms.openai_embedding_model,
+    base_url=settings.llms.openai_base_url,
+    api_key=settings.llms.openai_api_key,
 )
 sync_client = QdrantClient(
     url=settings.db.qdrant.url,
@@ -33,7 +35,7 @@ def seed_initial_docs():
     if not sync_client.collection_exists(settings.db.qdrant.collection_name):
         sync_client.create_collection(
             collection_name=settings.db.qdrant.collection_name,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
         )
 
     if not os.path.exists("./.data/docs"):
