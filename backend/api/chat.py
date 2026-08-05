@@ -18,7 +18,6 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from langchain.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agent.agent import get_agent
 from backend.agent.utils.ingestion import (
@@ -29,10 +28,9 @@ from backend.agent.utils.ingestion import (
 )
 from backend.agent.utils.rag import vector_store
 from backend.auth.dependencies import get_current_active_user
-from backend.core.chat_history import delete_owner_messages, list_messages, save_message
 from backend.core.constants import MessageRole
-from backend.core.db import get_db
 from backend.core.models.user import User
+from backend.core.repositories import ChatMessageRepository, get_chat_message_repository
 from .schemas import ChatRequest, MessageOut, MessagesPage
 
 router = APIRouter(tags=["Chat"])
@@ -45,15 +43,14 @@ async def chat_invoke(
     request: ChatRequest,
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    session: Annotated[AsyncSession, Depends(get_db)],
+    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
 ):
     config = {"configurable": {"thread_id": current_user.id}}
     input = {
         "messages": [HumanMessage(content=request.message)],
         "attached_file_ids": request.attached_file_ids,
     }
-    await save_message(
-        session,
+    await messages_repo.save(
         owner_id=current_user.id,
         role=MessageRole.HUMAN,
         content=request.message,
@@ -63,8 +60,7 @@ async def chat_invoke(
         config=config,
     )
     reply = messages["messages"][-1].content
-    await save_message(
-        session,
+    await messages_repo.save(
         owner_id=current_user.id,
         role=MessageRole.AI,
         content=reply,
@@ -79,12 +75,11 @@ async def chat_invoke(
 @router.get("/messages", response_model=MessagesPage)
 async def get_messages(
     current_user: Annotated[User, Depends(get_current_active_user)],
-    session: Annotated[AsyncSession, Depends(get_db)],
+    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
-    messages, total = await list_messages(
-        session,
+    messages, total = await messages_repo.list_for_owner(
         owner_id=current_user.id,
         limit=limit,
         offset=offset,
@@ -105,11 +100,11 @@ async def get_messages(
 async def clear_chat(
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    session: Annotated[AsyncSession, Depends(get_db)],
+    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
 ):
     await agent.checkpointer.adelete_thread(str(current_user.id))
     await delete_owner_documents(str(current_user.id))
-    await delete_owner_messages(session, owner_id=current_user.id)
+    await messages_repo.delete_for_owner(owner_id=current_user.id)
 
 
 @router.post("/documents", status_code=status.HTTP_201_CREATED)
@@ -158,15 +153,14 @@ async def chat_stream(
     request: ChatRequest,
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    session: Annotated[AsyncSession, Depends(get_db)],
+    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
 ):
     config = {"configurable": {"thread_id": current_user.id}}
     input = {
         "messages": [HumanMessage(content=request.message)],
         "attached_file_ids": request.attached_file_ids,
     }
-    await save_message(
-        session,
+    await messages_repo.save(
         owner_id=current_user.id,
         role=MessageRole.HUMAN,
         content=request.message,
@@ -186,8 +180,7 @@ async def chat_stream(
 
         reply = "".join(reply_chunks)
         if reply:
-            await save_message(
-                session,
+            await messages_repo.save(
                 owner_id=current_user.id,
                 role=MessageRole.AI,
                 content=reply,
@@ -204,7 +197,7 @@ async def websocket_endpoint(
     websocket: WebSocket,
     agent: Annotated[CompiledStateGraph, Depends(get_agent)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    session: Annotated[AsyncSession, Depends(get_db)],
+    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
 ):
     await websocket.accept()
 
@@ -224,8 +217,7 @@ async def websocket_endpoint(
                 "messages": [HumanMessage(user_message)],
                 "attached_file_ids": attached_file_ids,
             }
-            await save_message(
-                session,
+            await messages_repo.save(
                 owner_id=current_user.id,
                 role=MessageRole.HUMAN,
                 content=user_message,
@@ -248,8 +240,7 @@ async def websocket_endpoint(
 
             reply = "".join(reply_chunks)
             if reply:
-                await save_message(
-                    session,
+                await messages_repo.save(
                     owner_id=current_user.id,
                     role=MessageRole.AI,
                     content=reply,
