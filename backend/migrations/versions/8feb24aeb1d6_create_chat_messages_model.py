@@ -1,4 +1,4 @@
-"""
+"""create chat messages model
 
 Revision ID: 8feb24aeb1d6
 Revises: d38d46e98137

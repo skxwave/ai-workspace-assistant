@@ -8,6 +8,10 @@ class Agent(BaseModel):
 
 class Tools(BaseModel):
     github_pat: str
+    github_app_id: str
+    github_client_id: str
+    github_client_secret: str
+    github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
 
 
 class LLMs(BaseModel):

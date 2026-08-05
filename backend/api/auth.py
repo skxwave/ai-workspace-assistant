@@ -1,8 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
+import httpx
 
+from backend.core import settings
 from backend.auth.dependencies import get_current_active_user, oauth2_scheme
 from backend.auth.schemas import RefreshRequest, TokenPair, UserCreate, UserRead
 from backend.core.models.user import User
@@ -60,3 +62,43 @@ async def logout(
 @router.get("/me", response_model=UserRead)
 async def me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
+
+
+@router.get("/github/auth_url")
+async def get_github_url():
+    return {
+        "url": f"https://github.com/login/oauth/authorize?client_id={settings.tools.github_client_id}&redirect_uri={settings.tools.github_redirect_uri}&scope=repo,user"
+    }
+
+
+@router.get("/github/callback")
+async def github_callback(
+    code: str = Query(),
+):
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": settings.tools.github_client_id,
+                "client_secret": settings.tools.github_client_secret,
+                "code": code,
+                "redirect_uri": settings.tools.github_redirect_uri,
+            },
+            headers={"Accept": "application/json"},
+        )
+
+        data = response.json()
+        access_token = data.get("access_token")
+
+        if not access_token:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to retrieve token from GitHub",
+            )
+
+        # TODO: encrypt and store to postgres; do not return raw access_token
+        return {
+            "status": "ok",
+            "message": "GitHub successfully connected!",
+            "access_token": access_token,
+        }
