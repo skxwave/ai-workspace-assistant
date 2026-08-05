@@ -3,21 +3,19 @@ from typing import Annotated
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.db import get_db
 from backend.core.models.user import User
 
 from .blacklist import is_blacklisted
 from .security import decode_token
-from .service import credentials_exception, get_user_by_id
+from .service import AuthService, credentials_exception, get_auth_service
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
 async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
-    session: Annotated[AsyncSession, Depends(get_db)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> User:
     try:
         payload = decode_token(token)
@@ -29,7 +27,7 @@ async def get_current_user(
     if await is_blacklisted(payload["jti"]):
         raise credentials_exception
 
-    user = await get_user_by_id(session, payload["sub"])
+    user = await auth_service.get_user_by_id(payload["sub"])
     if user is None:
         raise credentials_exception
     return user
