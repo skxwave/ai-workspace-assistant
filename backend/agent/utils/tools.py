@@ -113,33 +113,54 @@ class GithubResponseTrimInterceptor:
         return result.model_copy(update={"content": new_content}) if changed else result
 
 
-mcp_client = MultiServerMCPClient(
-    {
-        "github": {
-            "transport": "http",
-            "url": "https://api.githubcopilot.com/mcp/",
-            "headers": {
-                "Authorization": f"Bearer {settings.tools.github_pat}",
-                "Accept": "text/event-stream",
-                "User-Agent": "AI-Workspace-Assistant/1.0",
-            },
-            "timeout": 30.0,
+# Easy to add new integrations
+_INTEGRATION_SERVER_BUILDERS = {
+    "github": lambda token: {
+        "transport": "http",
+        "url": "https://api.githubcopilot.com/mcp/",
+        "headers": {
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+            "User-Agent": "AI-Workspace-Assistant/1.0",
         },
+        "timeout": 30.0,
     },
-    tool_interceptors=[RetryOn429Interceptor(), GithubResponseTrimInterceptor()],
-)
+}
 
 
-_tools_cache: list | None = None
-_tools_cache_lock = asyncio.Lock()
+def get_user_mcp_client(tokens: dict[str, str]) -> MultiServerMCPClient | None:
+    """Build an MCP client with only the servers the user has connected.
+
+    `tokens` maps integration name (e.g. "github") to that user's access token.
+    Integrations missing a token are left out entirely, so the model never
+    sees tools it can't actually use.
+    """
+    servers = {
+        name: build_config(tokens[name])
+        for name, build_config in _INTEGRATION_SERVER_BUILDERS.items()
+        if tokens.get(name)
+    }
+    if not servers:
+        return None
+    return MultiServerMCPClient(
+        servers,
+        tool_interceptors=[RetryOn429Interceptor(), GithubResponseTrimInterceptor()],
+    )
 
 
-async def get_tools_list() -> list:
-    """Cached for the process lifetime so agent.py and chat_node share one tool list."""
-    global _tools_cache
-    if _tools_cache is None:
-        async with _tools_cache_lock:
-            if _tools_cache is None:
-                mcp_tools = await mcp_client.get_tools()
-                _tools_cache = [knowledge_base_tool, search_user_files, *mcp_tools]
-    return _tools_cache
+async def get_tools_list(tokens: dict[str, str]) -> tuple[list, list[str]]:
+    """Get tools list for a user, plus the names of integrations they haven't connected.
+
+    The missing list lets the agent proactively tell the user which
+    integrations would unlock more tools, instead of silently having no
+    access to them.
+    """
+    missing_integrations = [
+        name for name in _INTEGRATION_SERVER_BUILDERS if not tokens.get(name)
+    ]
+
+    mcp_client = get_user_mcp_client(tokens)
+    mcp_tools = await mcp_client.get_tools() if mcp_client else []
+
+    tools = [knowledge_base_tool, search_user_files, *mcp_tools]
+    return tools, missing_integrations

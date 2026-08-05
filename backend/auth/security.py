@@ -48,5 +48,10 @@ def create_refresh_token(user_id: uuid.UUID) -> tuple[str, str, datetime]:
     )
 
 
+def create_github_oauth_state(user_id: uuid.UUID) -> str:
+    token, _, _ = _create_token(str(user_id), "github_oauth_state", timedelta(minutes=10))
+    return token
+
+
 def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.auth.secret_key, algorithms=[settings.auth.algorithm])

@@ -34,10 +34,6 @@ async def init_collection_if_not_exists():
         )
 
 
-async def initial_documents_load():
-    pass
-
-
 vector_store = QdrantVectorStore(
     client=sync_client,
     collection_name=settings.db.qdrant.collection_name,

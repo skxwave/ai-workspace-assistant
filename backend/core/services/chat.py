@@ -18,18 +18,39 @@ from backend.agent.utils.ingestion import (
 )
 from backend.agent.utils.rag import vector_store
 from backend.agent.utils.tools import get_tools_list
+from backend.auth.dependencies import get_current_active_user
 from backend.core.constants import MAX_UPLOAD_SIZE, MessageRole
 from backend.core.models.message import ChatMessage
-from backend.core.repositories import ChatMessageRepository, get_chat_message_repository
+from backend.core.models.user import User
+from backend.core.repositories import (
+    ChatMessageRepository,
+    UserIntegrationRepository,
+    get_chat_message_repository,
+    get_user_integration_repository,
+)
 
 
 class ChatService:
-    def __init__(self, agent: CompiledStateGraph, messages_repo: ChatMessageRepository):
+    def __init__(
+        self,
+        agent: CompiledStateGraph,
+        messages_repo: ChatMessageRepository,
+        github_token: str,
+        missing_integrations: list[str],
+    ):
         self.agent = agent
         self.messages_repo = messages_repo
+        self.github_token = github_token
+        self.missing_integrations = missing_integrations
 
     def _config(self, owner_id: UUID) -> dict:
-        return {"configurable": {"thread_id": owner_id}}
+        return {
+            "configurable": {
+                "thread_id": owner_id,
+                "github_token": self.github_token,
+                "missing_integrations": self.missing_integrations,
+            }
+        }
 
     async def send_message(
         self,
@@ -158,10 +179,17 @@ class ChatService:
 
 
 async def get_chat_service(
-    messages_repo: Annotated[
-        ChatMessageRepository, Depends(get_chat_message_repository)
-    ],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
+    integration_repo: Annotated[UserIntegrationRepository, Depends(get_user_integration_repository)],
 ) -> ChatService:
-    tools = await get_tools_list()
+    github_token = await integration_repo.get_github_token(current_user.id) or ""
+    tokens = {"github": github_token} if github_token else {}
+    tools, missing_integrations = await get_tools_list(tokens)
     agent = await build_agent(tools)
-    return ChatService(agent=agent, messages_repo=messages_repo)
+    return ChatService(
+        agent=agent,
+        messages_repo=messages_repo,
+        github_token=github_token,
+        missing_integrations=missing_integrations,
+    )

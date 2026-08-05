@@ -8,6 +8,7 @@ from backend.core import settings
 from backend.auth.dependencies import get_current_active_user, oauth2_scheme
 from backend.auth.schemas import RefreshRequest, TokenPair, UserCreate, UserRead
 from backend.core.models.user import User
+from backend.core.repositories.user_integration import UserIntegrationRepository, get_user_integration_repository
 from backend.core.services import AuthService, get_auth_service
 
 router = APIRouter(tags=["Auth"])
@@ -65,15 +66,17 @@ async def me(current_user: Annotated[User, Depends(get_current_active_user)]):
 
 
 @router.get("/github/auth_url")
-async def get_github_url():
+async def get_github_url(current_user: Annotated[User, Depends(get_current_active_user)]):
     return {
-        "url": f"https://github.com/login/oauth/authorize?client_id={settings.tools.github_client_id}&redirect_uri={settings.tools.github_redirect_uri}&scope=repo,user"
+        "url": f"https://github.com/login/oauth/authorize?client_id={settings.tools.github_client_id}&redirect_uri={settings.tools.github_redirect_uri}&scope=repo,user&state={current_user.id}"
     }
 
 
 @router.get("/github/callback")
 async def github_callback(
+    integration_repo: Annotated[UserIntegrationRepository, Depends(get_user_integration_repository)],
     code: str = Query(),
+    state: str = Query(),
 ):
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -96,7 +99,9 @@ async def github_callback(
                 detail="Failed to retrieve token from GitHub",
             )
 
-        # TODO: encrypt and store to postgres; do not return raw access_token
+        # TODO: encrypt before storing
+        await integration_repo.save_github_token(state, access_token)
+
         return {
             "status": "ok",
             "message": "GitHub successfully connected!",

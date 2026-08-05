@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.auth.dependencies import get_current_active_user
 from backend.core.models.user import User
-from backend.core.services import ChatService, get_chat_service
+from backend.core.services.chat import ChatService, get_chat_service
 from .schemas import ChatRequest, MessageOut, MessagesPage
 
 router = APIRouter(tags=["Chat"])

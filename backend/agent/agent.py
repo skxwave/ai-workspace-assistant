@@ -6,13 +6,13 @@ from langchain_core.messages import (
     trim_messages,
 )
 from langchain_openai import ChatOpenAI
+from langgraph.config import get_config
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from backend.agent.memory.checkpointer import get_checkpointer
 from backend.agent.utils.state import MessagesState
-from backend.agent.utils.llms import build_llm_chain
 from backend.agent.utils.prompts import system_prompt_template
 from backend.core import settings
 from langgraph.checkpoint.memory import InMemorySaver
@@ -41,6 +41,8 @@ class WorkspaceAgent:
             start_on="human",
         )
 
+        self._llm_chain = system_prompt_template | self._chat_llm.bind_tools(tools=self.tools)
+
     def _create_llm(self, model: str, temperature: float) -> ChatOpenAI:
         return ChatOpenAI(
             model=model,
@@ -67,13 +69,17 @@ class WorkspaceAgent:
                 )
             ] + trimmed_messages
 
-        llm_chain = build_llm_chain(
-            llm=self._chat_llm,
-            tools=self.tools,
-            prompt_template=system_prompt_template,
-        )
+        missing_integrations = get_config()["configurable"].get("missing_integrations")
+        if missing_integrations:
+            trimmed_messages = [
+                SystemMessage(
+                    content=f"The user has not connected these integrations: "
+                    f"{missing_integrations}. If their request needs one, tell "
+                    f"them to connect it instead of guessing or refusing silently."
+                )
+            ] + trimmed_messages
 
-        response = await llm_chain.ainvoke({"messages": trimmed_messages})
+        response = await self._llm_chain.ainvoke({"messages": trimmed_messages})
         return {"messages": [response], "attached_file_ids": None}
 
     async def _summarize_node(self, state: MessagesState) -> dict:
