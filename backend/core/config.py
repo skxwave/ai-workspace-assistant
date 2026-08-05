@@ -27,7 +27,7 @@ class App(BaseModel):
     debug: bool = True
     title: str = "AI Workspace Assistant"
     description: str = "Internal AI assistant for engineers"
-    version: str = "0.0.1"
+    version: str = "0.1.0"
 
 
 class Qdrant(BaseModel):
