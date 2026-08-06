@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 import httpx
 
@@ -8,7 +9,10 @@ from backend.core import settings
 from backend.auth.dependencies import get_current_active_user, oauth2_scheme
 from backend.auth.schemas import RefreshRequest, TokenPair, UserCreate, UserRead
 from backend.core.models.user import User
-from backend.core.repositories.user_integration import UserIntegrationRepository, get_user_integration_repository
+from backend.core.repositories.user_integration import (
+    UserIntegrationRepository,
+    get_user_integration_repository,
+)
 from backend.core.services import AuthService, get_auth_service
 
 router = APIRouter(tags=["Auth"])
@@ -66,7 +70,9 @@ async def me(current_user: Annotated[User, Depends(get_current_active_user)]):
 
 
 @router.get("/github/auth_url")
-async def get_github_url(current_user: Annotated[User, Depends(get_current_active_user)]):
+async def get_github_url(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+):
     return {
         "url": f"https://github.com/login/oauth/authorize?client_id={settings.tools.github_client_id}&redirect_uri={settings.tools.github_redirect_uri}&scope=repo,user&state={current_user.id}"
     }
@@ -74,7 +80,9 @@ async def get_github_url(current_user: Annotated[User, Depends(get_current_activ
 
 @router.get("/github/callback")
 async def github_callback(
-    integration_repo: Annotated[UserIntegrationRepository, Depends(get_user_integration_repository)],
+    integration_repo: Annotated[
+        UserIntegrationRepository, Depends(get_user_integration_repository)
+    ],
     code: str = Query(),
     state: str = Query(),
 ):
@@ -95,15 +103,14 @@ async def github_callback(
 
         if not access_token:
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Failed to retrieve token from GitHub",
             )
 
         # TODO: encrypt before storing
         await integration_repo.save_github_token(state, access_token)
 
-        return {
-            "status": "ok",
-            "message": "GitHub successfully connected!",
-            "access_token": access_token,
-        }
+        return RedirectResponse(
+            settings.app.frontend_url,
+            status_code=status.HTTP_303_SEE_OTHER,
+        )

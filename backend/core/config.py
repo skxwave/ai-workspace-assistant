@@ -7,8 +7,6 @@ class Agent(BaseModel):
 
 
 class Tools(BaseModel):
-    github_pat: str
-    github_app_id: str
     github_client_id: str
     github_client_secret: str
     github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
@@ -28,6 +26,11 @@ class App(BaseModel):
     title: str = "AI Workspace Assistant"
     description: str = "Internal AI assistant for engineers"
     version: str = "0.1.0"
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    frontend_url: str = "http://localhost:5173"
 
 
 class Qdrant(BaseModel):

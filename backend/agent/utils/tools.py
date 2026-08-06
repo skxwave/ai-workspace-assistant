@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import random
 
 import httpx
@@ -12,6 +13,8 @@ from qdrant_client.http.models import FieldCondition, Filter, MatchAny, MatchVal
 from backend.agent.utils.rag import _get_retriever, vector_store
 from backend.core import settings
 
+logger = logging.getLogger(__name__)
+
 knowledge_base_tool = create_retriever_tool(
     retriever=_get_retriever(),
     name="search_knowledge_base",
@@ -21,9 +24,9 @@ knowledge_base_tool = create_retriever_tool(
 
 @tool
 async def search_user_files(query: str, file_ids: list[str] | None = None) -> str:
-    """Search files uploaded by the user. 
+    """Search files uploaded by the user.
     Use this tool when the user asks questions about their uploaded documents.
-    
+
     Arguments:
         query: Search query phrase or keywords.
         file_ids: Optional list of specific file IDs to search within. Leave empty to search all user files.
@@ -35,10 +38,7 @@ async def search_user_files(query: str, file_ids: list[str] | None = None) -> st
 
     if file_ids:
         must_conditions.append(
-            FieldCondition(
-                key="metadata.file_id", 
-                match=MatchAny(any=file_ids)
-            )
+            FieldCondition(key="metadata.file_id", match=MatchAny(any=file_ids))
         )
 
     results = await vector_store.asimilarity_search(
@@ -49,7 +49,8 @@ async def search_user_files(query: str, file_ids: list[str] | None = None) -> st
     if not results:
         return "No relevant results found."
     return "\n\n".join(
-        f"[{doc.metadata.get('filename', 'uploaded file')}] {doc.page_content}" for doc in results
+        f"[{doc.metadata.get('filename', 'uploaded file')}] {doc.page_content}"
+        for doc in results
     )
 
 
@@ -68,7 +69,11 @@ class RetryOn429Interceptor:
                 if exc.response.status_code != 429 or attempt == self.max_retries:
                     raise
                 retry_after = exc.response.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after else self.base_delay * (2**attempt)
+                delay = (
+                    float(retry_after)
+                    if retry_after
+                    else self.base_delay * (2**attempt)
+                )
                 delay += random.uniform(0, delay * 0.1)
                 await asyncio.sleep(delay)
 
@@ -82,7 +87,9 @@ _GITHUB_NOISE_FIELDS = {"sha", "url", "git_url", "html_url", "download_url", "_l
 
 def _strip_fields(value, fields: set[str]):
     if isinstance(value, dict):
-        return {k: _strip_fields(v, fields) for k, v in value.items() if k not in fields}
+        return {
+            k: _strip_fields(v, fields) for k, v in value.items() if k not in fields
+        }
     if isinstance(value, list):
         return [_strip_fields(item, fields) for item in value]
     return value
@@ -102,11 +109,13 @@ class GithubResponseTrimInterceptor:
             if isinstance(block, TextContent):
                 try:
                     data = json.loads(block.text)
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     new_content.append(block)
                     continue
                 trimmed = _strip_fields(data, _GITHUB_NOISE_FIELDS)
-                block = block.model_copy(update={"text": json.dumps(trimmed, separators=(",", ":"))})
+                block = block.model_copy(
+                    update={"text": json.dumps(trimmed, separators=(",", ":"))}
+                )
                 changed = True
             new_content.append(block)
 
@@ -148,19 +157,61 @@ def get_user_mcp_client(tokens: dict[str, str]) -> MultiServerMCPClient | None:
     )
 
 
-async def get_tools_list(tokens: dict[str, str]) -> tuple[list, list[str]]:
+_AUTH_STATUS_CODES = {401, 403}
+
+
+def _is_auth_failure(
+    error: BaseException | None,
+    depth: int = 0,
+) -> bool:
+    """True if `error` was ultimately caused by rejected credentials"""
+    if error is None or depth > 10:
+        return False
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code in _AUTH_STATUS_CODES
+    if isinstance(error, BaseExceptionGroup):
+        return any(_is_auth_failure(exc, depth + 1) for exc in error.exceptions)
+    return _is_auth_failure(error.__cause__ or error.__context__, depth + 1)
+
+
+async def _load_integration_tools(
+    name: str,
+    token: str,
+) -> list:
+    """Fetch one integration's MCP tools. Raises on failure."""
+    client = MultiServerMCPClient(
+        {name: _INTEGRATION_SERVER_BUILDERS[name](token)},
+        tool_interceptors=[RetryOn429Interceptor(), GithubResponseTrimInterceptor()],
+    )
+    return await client.get_tools()
+
+
+async def get_tools_list(tokens: dict[str, str]) -> tuple[list, list[str], list[str]]:
     """Get tools list for a user, plus the names of integrations they haven't connected.
 
     The missing list lets the agent proactively tell the user which
     integrations would unlock more tools, instead of silently having no
     access to them.
     """
-    missing_integrations = [
-        name for name in _INTEGRATION_SERVER_BUILDERS if not tokens.get(name)
-    ]
+    missing_integrations: list[str] = []
+    expired_integrations: list[str] = []
+    mcp_tools: list = []
 
-    mcp_client = get_user_mcp_client(tokens)
-    mcp_tools = await mcp_client.get_tools() if mcp_client else []
+    for name in _INTEGRATION_SERVER_BUILDERS:
+        token = tokens.get(name)
+        if not token:
+            missing_integrations.append(name)
+            continue
+
+        try:
+            mcp_tools.extend(await _load_integration_tools(name, token))
+        except Exception as error:
+            if _is_auth_failure(error):
+                logger.warning("%s rejected the stored token for this user", name)
+                expired_integrations.append(name)
+            else:
+                logger.exception("Could not load %s tools", name)
+                missing_integrations.append(name)
 
     tools = [knowledge_base_tool, search_user_files, *mcp_tools]
-    return tools, missing_integrations
+    return tools, missing_integrations, expired_integrations

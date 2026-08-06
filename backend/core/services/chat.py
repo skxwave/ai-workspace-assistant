@@ -6,7 +6,7 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, UploadFile, status
-from langchain.messages import HumanMessage
+from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.agent.agent import build_agent
@@ -72,7 +72,7 @@ class ChatService:
             },
             config=self._config(owner_id),
         )
-        reply = result["messages"][-1].content
+        reply = result["messages"][-1].text
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.AI,
@@ -104,8 +104,16 @@ class ChatService:
             version="v2",
         ):
             msg, _ = chunk["data"]
-            reply_chunks.append(msg.content)
-            yield msg.content
+
+            if not isinstance(msg, (AIMessage, AIMessageChunk)):
+                continue
+
+            text = msg.text
+            if not text:
+                continue
+
+            reply_chunks.append(text)
+            yield text
 
         reply = "".join(reply_chunks)
         if reply:
@@ -185,7 +193,12 @@ async def get_chat_service(
 ) -> ChatService:
     github_token = await integration_repo.get_github_token(current_user.id) or ""
     tokens = {"github": github_token} if github_token else {}
-    tools, missing_integrations = await get_tools_list(tokens)
+    tools, missing_integrations, expired_integrations = await get_tools_list(tokens)
+
+    if "github" in expired_integrations:
+        await integration_repo.clear_github_token(current_user.id)
+        github_token = ""
+
     agent = await build_agent(tools)
     return ChatService(
         agent=agent,

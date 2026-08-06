@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Annotated
 
 from fastapi import (
@@ -16,6 +17,8 @@ from backend.auth.dependencies import get_current_active_user
 from backend.core.models.user import User
 from backend.core.services.chat import ChatService, get_chat_service
 from .schemas import ChatRequest, MessageOut, MessagesPage
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Chat"])
 
@@ -101,32 +104,51 @@ async def websocket_endpoint(
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    await websocket.accept()
+    try:
+        await websocket.accept()
+    except RuntimeError:
+        logger.info("Handshake aborted by client (user %s)", current_user.id)
+        return
 
     try:
         while True:
             raw_data = await websocket.receive_text()
-            data = json.loads(raw_data)
+
+            try:
+                data = json.loads(raw_data)
+            except json.JSONDecodeError:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": "Malformed frame",
+                    }
+                )
+                continue
+
             user_message = data.get("message", "")
             attached_file_ids = data.get("attached_file_ids")
 
             if not user_message:
                 continue
 
-            async for content in chat_service.stream_message(
-                owner_id=current_user.id,
-                message=user_message,
-                attached_file_ids=attached_file_ids,
-            ):
-                await websocket.send_json({"content": content})
-
-            await websocket.send_json({"type": "end"})
+            try:
+                async for content in chat_service.stream_message(
+                    owner_id=current_user.id,
+                    message=user_message,
+                    attached_file_ids=attached_file_ids,
+                ):
+                    await websocket.send_json({"content": content})
+            except WebSocketDisconnect:
+                raise
+            except Exception:
+                logger.exception("Streaming failed for user %s", current_user.id)
+                await websocket.send_json(
+                    {"type": "error", "detail": "The assistant failed to answer."}
+                )
+            else:
+                await websocket.send_json({"type": "end"})
     except WebSocketDisconnect:
-        # TODO: change to logger
-        print(f"Client disconnected from thread: {current_user.id}")
-    except Exception as e:
-        print(f"Error occurred: {str(e)}")
-        await websocket.close()
+        logger.info("Client disconnected from thread: %s", current_user.id)
 
 
 @router.get("/debug/state")

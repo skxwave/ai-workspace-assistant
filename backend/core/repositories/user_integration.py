@@ -2,7 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import Depends
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.db import get_db
@@ -42,6 +42,14 @@ class UserIntegrationRepository:
 
         await self.session.commit()
         return integration
+
+    async def clear_github_token(self, user_id: uuid.UUID) -> None:
+        await self.session.execute(
+            update(UserIntegration)
+            .where(UserIntegration.user_id == user_id)
+            .values(github_access_token=None)
+        )
+        await self.session.commit()
 
 
 def get_user_integration_repository(

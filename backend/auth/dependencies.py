@@ -2,15 +2,43 @@ from typing import Annotated
 
 import jwt
 from fastapi import Depends, HTTPException, status
+from fastapi.requests import HTTPConnection
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.security.utils import get_authorization_scheme_param
 
 from backend.core.models.user import User
-from backend.core.services.auth import AuthService, credentials_exception, get_auth_service
+from backend.core.services.auth import (
+    AuthService,
+    credentials_exception,
+    get_auth_service,
+)
 
 from .blacklist import is_blacklisted
 from .security import decode_token
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+class OAuth2BearerHeaderOrQuery(OAuth2PasswordBearer):
+    async def __call__(self, connection: HTTPConnection) -> str | None:
+        authorization = connection.headers.get("Authorization")
+        scheme, param = get_authorization_scheme_param(authorization)
+
+        if authorization and scheme.lower() == "bearer":
+            return param
+
+        token = connection.query_params.get("token")
+        if token:
+            return token
+
+        if self.auto_error:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "Not authenticated",
+                {"WWW-Authenticate": "Bearer"},
+            )
+        return None
+
+
+oauth2_scheme = OAuth2BearerHeaderOrQuery(tokenUrl="auth/login")
 
 
 async def get_current_user(
@@ -33,13 +61,17 @@ async def get_current_user(
     return user
 
 
-async def get_current_active_user(user: Annotated[User, Depends(get_current_user)]) -> User:
+async def get_current_active_user(
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
     if not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Inactive user")
     return user
 
 
-async def require_superuser(user: Annotated[User, Depends(get_current_active_user)]) -> User:
+async def require_superuser(
+    user: Annotated[User, Depends(get_current_active_user)],
+) -> User:
     if not user.is_superuser:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin privileges required")
     return user
