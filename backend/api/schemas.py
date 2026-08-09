@@ -27,7 +27,7 @@ class ChatOut(BaseModel):
 
 
 class ChatsPage(BaseModel):
-    messages: list[ChatOut]
+    chats: list[ChatOut]
     total: int
     limit: int
     offset: int

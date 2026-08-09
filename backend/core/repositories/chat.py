@@ -27,9 +27,7 @@ class ChatRepository:
         offset: int,
     ) -> tuple[list[Chat], int]:
         total = await self.session.scalar(
-            select(func.count())
-            .select_from(Chat)
-            .where(Chat.owner_id == owner_id)
+            select(func.count()).select_from(Chat).where(Chat.owner_id == owner_id)
         )
 
         result = await self.session.execute(
@@ -42,9 +40,17 @@ class ChatRepository:
         newest_first = list(result.scalars().all())
         return list(reversed(newest_first)), total or 0
 
-    async def delete_for_owner(self, *, owner_id: uuid.UUID) -> None:
+    async def delete_for_owner(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        chat_id: uuid.UUID,
+    ) -> None:
         await self.session.execute(
-            delete(Chat).where(Chat.owner_id == owner_id)
+            delete(Chat).where(
+                Chat.owner_id == owner_id,
+                Chat.id == chat_id,
+            )
         )
         await self.session.commit()
 

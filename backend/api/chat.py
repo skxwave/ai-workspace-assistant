@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -34,7 +35,7 @@ async def create_chat(
 
 @router.post("/{chat_id}/invoke")
 async def chat_invoke(
-    chat_id: str,
+    chat_id: UUID,
     request: ChatRequest,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
@@ -50,7 +51,7 @@ async def chat_invoke(
 
 @router.get("/{chat_id}/messages", response_model=MessagesPage)
 async def get_messages(
-    chat_id: str,
+    chat_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -75,8 +76,8 @@ async def get_messages(
 
 
 @router.delete("/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def clear_chat(
-    chat_id: str,
+async def delete_chat(
+    chat_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
@@ -88,7 +89,7 @@ async def clear_chat(
 
 @router.post("/{chat_id}/stream")
 async def chat_stream(
-    chat_id: str,
+    chat_id: UUID,
     request: ChatRequest,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
@@ -111,7 +112,7 @@ async def chat_stream(
 @router.websocket("/{chat_id}/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    chat_id: str,
+    chat_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
@@ -165,7 +166,7 @@ async def websocket_endpoint(
 
 @router.get("/{chat_id}/debug/state")
 async def graph_state(
-    chat_id: str,
+    chat_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
@@ -190,7 +191,7 @@ async def get_chat_list(
     )
 
     return ChatsPage(
-        messages=[
+        chats=[
             ChatOut(id=str(c.id)) for c in chats
         ],
         total=total,

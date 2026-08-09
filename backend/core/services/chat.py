@@ -182,6 +182,10 @@ class ChatService:
             owner_id=owner_id,
             chat_id=chat_id,
         )
+        await self.chat_repo.delete_for_owner(
+            owner_id=owner_id,
+            chat_id=chat_id,
+        )
 
     async def upload_document(
         self,
