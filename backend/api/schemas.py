@@ -20,3 +20,15 @@ class MessagesPage(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class ChatOut(BaseModel):
+    id: str | None = None
+
+
+class ChatsPage(BaseModel):
+    messages: list[ChatOut]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool

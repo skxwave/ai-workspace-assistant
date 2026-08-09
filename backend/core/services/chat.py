@@ -12,7 +12,6 @@ from langgraph.graph.state import CompiledStateGraph
 from backend.agent.agent import build_agent
 from backend.agent.utils.ingestion import (
     chunk_documents,
-    delete_owner_documents,
     get_loader,
     supported_extensions,
 )
@@ -20,11 +19,14 @@ from backend.agent.utils.rag import vector_store
 from backend.agent.utils.tools import get_tools_list
 from backend.auth.dependencies import get_current_active_user
 from backend.core.constants import MAX_UPLOAD_SIZE, MessageRole
+from backend.core.models.chat import Chat
 from backend.core.models.message import ChatMessage
 from backend.core.models.user import User
 from backend.core.repositories import (
+    ChatRepository,
     ChatMessageRepository,
     UserIntegrationRepository,
+    get_chat_repository,
     get_chat_message_repository,
     get_user_integration_repository,
 )
@@ -34,28 +36,39 @@ class ChatService:
     def __init__(
         self,
         agent: CompiledStateGraph,
+        chat_repo: ChatRepository,
         messages_repo: ChatMessageRepository,
         github_token: str,
         missing_integrations: list[str],
     ):
         self.agent = agent
+        self.chat_repo = chat_repo
         self.messages_repo = messages_repo
         self.github_token = github_token
         self.missing_integrations = missing_integrations
 
-    def _config(self, owner_id: UUID) -> dict:
+    def _config(self, chat_id: UUID) -> dict:
         return {
             "configurable": {
-                "thread_id": owner_id,
+                "thread_id": chat_id,
                 "github_token": self.github_token,
                 "missing_integrations": self.missing_integrations,
             }
         }
 
+    async def create_chat(
+        self,
+        *,
+        owner_id: UUID,
+    ) -> UUID:
+        chat = await self.chat_repo.save(owner_id=owner_id)
+        return chat.id
+
     async def send_message(
         self,
         *,
         owner_id: UUID,
+        chat_id: UUID,
         message: str,
         attached_file_ids: list[str] | None,
     ) -> str:
@@ -63,6 +76,7 @@ class ChatService:
             owner_id=owner_id,
             role=MessageRole.HUMAN,
             content=message,
+            chat_id=chat_id,
         )
 
         result = await self.agent.ainvoke(
@@ -70,13 +84,14 @@ class ChatService:
                 "messages": [HumanMessage(content=message)],
                 "attached_file_ids": attached_file_ids,
             },
-            config=self._config(owner_id),
+            config=self._config(chat_id),
         )
         reply = result["messages"][-1].text
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.AI,
             content=reply,
+            chat_id=chat_id,
         )
         return reply
 
@@ -84,6 +99,7 @@ class ChatService:
         self,
         *,
         owner_id: UUID,
+        chat_id: UUID,
         message: str,
         attached_file_ids: list[str] | None,
     ) -> AsyncIterator[str]:
@@ -91,6 +107,7 @@ class ChatService:
             owner_id=owner_id,
             role=MessageRole.HUMAN,
             content=message,
+            chat_id=chat_id,
         )
 
         reply_chunks: list[str] = []
@@ -99,7 +116,7 @@ class ChatService:
                 "messages": [HumanMessage(content=message)],
                 "attached_file_ids": attached_file_ids,
             },
-            config=self._config(owner_id),
+            config=self._config(chat_id),
             stream_mode="messages",
             version="v2",
         ):
@@ -121,21 +138,50 @@ class ChatService:
                 owner_id=owner_id,
                 role=MessageRole.AI,
                 content=reply,
+                chat_id=chat_id,
             )
 
-    async def get_history(
-        self, *, owner_id: UUID, limit: int, offset: int
+    async def get_chat_history(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        limit: int,
+        offset: int,
     ) -> tuple[list[ChatMessage], int]:
         return await self.messages_repo.list_for_owner(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def get_chat_list(
+        self,
+        *,
+        owner_id: UUID,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Chat], int]:
+        return await self.chat_repo.list_for_owner(
             owner_id=owner_id,
             limit=limit,
             offset=offset,
         )
 
-    async def clear(self, *, owner_id: UUID) -> None:
-        await self.agent.checkpointer.adelete_thread(str(owner_id))
-        await delete_owner_documents(str(owner_id))
-        await self.messages_repo.delete_for_owner(owner_id=owner_id)
+    async def delete_chat(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+    ) -> None:
+        await self.agent.checkpointer.adelete_thread(str(chat_id))
+        # TODO: delete docs per chat somehow (or not delete, and set clean-up cron task to delete files that older than X days)
+        # await delete_owner_documents(str(owner_id))
+        await self.messages_repo.delete_for_owner(
+            owner_id=owner_id,
+            chat_id=chat_id,
+        )
 
     async def upload_document(
         self,
@@ -181,15 +227,20 @@ class ChatService:
     async def graph_state(
         self,
         *,
-        owner_id: UUID,
+        chat_id: UUID,
     ):
-        return await self.agent.aget_state(config=self._config(owner_id))
+        return await self.agent.aget_state(config=self._config(chat_id))
 
 
 async def get_chat_service(
     current_user: Annotated[User, Depends(get_current_active_user)],
-    messages_repo: Annotated[ChatMessageRepository, Depends(get_chat_message_repository)],
-    integration_repo: Annotated[UserIntegrationRepository, Depends(get_user_integration_repository)],
+    chat_repo: Annotated[ChatRepository, Depends(get_chat_repository)],
+    messages_repo: Annotated[
+        ChatMessageRepository, Depends(get_chat_message_repository)
+    ],
+    integration_repo: Annotated[
+        UserIntegrationRepository, Depends(get_user_integration_repository)
+    ],
 ) -> ChatService:
     github_token = await integration_repo.get_github_token(current_user.id) or ""
     tokens = {"github": github_token} if github_token else {}
@@ -202,6 +253,7 @@ async def get_chat_service(
     agent = await build_agent(tools)
     return ChatService(
         agent=agent,
+        chat_repo=chat_repo,
         messages_repo=messages_repo,
         github_token=github_token,
         missing_integrations=missing_integrations,

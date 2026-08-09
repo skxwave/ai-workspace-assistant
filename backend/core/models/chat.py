@@ -25,8 +25,11 @@ class Chat(Base):
         index=True,
         nullable=False,
     )
-    messages: Mapped["ChatMessage"] = relationship(back_populates="chat")
-    
+    messages: Mapped["ChatMessage"] = relationship(
+        back_populates="chat",
+        cascade="all, delete-orphan",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -3,6 +3,6 @@ from langgraph.store.postgres.aio import AsyncPostgresStore
 
 
 async def get_store(connection_pool: AsyncConnectionPool):
-    store = AsyncPostgresStore()
+    store = AsyncPostgresStore(connection_pool)
     await store.setup()
     return store

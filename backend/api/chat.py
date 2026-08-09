@@ -16,36 +16,49 @@ from fastapi.responses import StreamingResponse
 from backend.auth.dependencies import get_current_active_user
 from backend.core.models.user import User
 from backend.core.services.chat import ChatService, get_chat_service
-from .schemas import ChatRequest, MessageOut, MessagesPage
+from .schemas import ChatOut, ChatRequest, ChatsPage, MessageOut, MessagesPage
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Chat"])
 
 
-@router.post("/invoke")
+@router.post("")
+async def create_chat(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+):
+    chat_id = await chat_service.create_chat(owner_id=current_user.id)
+    return {"chat_id": chat_id}
+
+
+@router.post("/{chat_id}/invoke")
 async def chat_invoke(
+    chat_id: str,
     request: ChatRequest,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
     reply = await chat_service.send_message(
         owner_id=current_user.id,
+        chat_id=chat_id,
         message=request.message,
         attached_file_ids=request.attached_file_ids,
     )
     return {"message": reply}
 
 
-@router.get("/messages", response_model=MessagesPage)
+@router.get("/{chat_id}/messages", response_model=MessagesPage)
 async def get_messages(
+    chat_id: str,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
-    messages, total = await chat_service.get_history(
+    messages, total = await chat_service.get_chat_history(
         owner_id=current_user.id,
+        chat_id=chat_id,
         limit=limit,
         offset=offset,
     )
@@ -61,25 +74,21 @@ async def get_messages(
     )
 
 
-@router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def clear_chat(
+    chat_id: str,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    await chat_service.clear(owner_id=current_user.id)
+    await chat_service.delete_chat(
+        owner_id=current_user.id,
+        chat_id=chat_id,
+    )
 
 
-@router.post("/documents", status_code=status.HTTP_201_CREATED)
-async def upload_document(
-    file: UploadFile,
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    chat_service: Annotated[ChatService, Depends(get_chat_service)],
-):
-    return await chat_service.upload_document(owner_id=current_user.id, file=file)
-
-
-@router.post("/stream")
+@router.post("/{chat_id}/stream")
 async def chat_stream(
+    chat_id: str,
     request: ChatRequest,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
@@ -87,6 +96,7 @@ async def chat_stream(
     async def event_generator():
         async for content in chat_service.stream_message(
             owner_id=current_user.id,
+            chat_id=chat_id,
             message=request.message,
             attached_file_ids=request.attached_file_ids,
         ):
@@ -98,9 +108,10 @@ async def chat_stream(
     )
 
 
-@router.websocket("/ws")
+@router.websocket("/{chat_id}/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
+    chat_id: str,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
@@ -134,6 +145,7 @@ async def websocket_endpoint(
             try:
                 async for content in chat_service.stream_message(
                     owner_id=current_user.id,
+                    chat_id=chat_id,
                     message=user_message,
                     attached_file_ids=attached_file_ids,
                 ):
@@ -151,10 +163,47 @@ async def websocket_endpoint(
         logger.info("Client disconnected from thread: %s", current_user.id)
 
 
-@router.get("/debug/state")
+@router.get("/{chat_id}/debug/state")
 async def graph_state(
+    chat_id: str,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    state = await chat_service.graph_state(owner_id=current_user.id)
+    state = await chat_service.graph_state(
+        owner_id=current_user.id,
+        chat_id=chat_id,
+    )
     return {"state": state}
+
+
+@router.get("")
+async def get_chat_list(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    chats, total = await chat_service.get_chat_list(
+        owner_id=current_user.id,
+        limit=limit,
+        offset=offset,
+    )
+
+    return ChatsPage(
+        messages=[
+            ChatOut(id=str(c.id)) for c in chats
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=offset + limit < total,
+    )
+
+
+@router.post("/documents", status_code=status.HTTP_201_CREATED)
+async def upload_document(
+    file: UploadFile,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+):
+    return await chat_service.upload_document(owner_id=current_user.id, file=file)
