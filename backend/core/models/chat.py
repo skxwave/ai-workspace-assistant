@@ -1,18 +1,18 @@
-from typing import TYPE_CHECKING
 import uuid
+from typing import TYPE_CHECKING
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, Uuid, func
+from sqlalchemy import DateTime, ForeignKey, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 
 if TYPE_CHECKING:
-    from .chat import Chat
+    from .message import ChatMessage
 
 
-class ChatMessage(Base):
-    __tablename__ = "chat_messages"
+class Chat(Base):
+    __tablename__ = "chats"
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
@@ -25,15 +25,8 @@ class ChatMessage(Base):
         index=True,
         nullable=False,
     )
-    role: Mapped[str] = mapped_column(String(20), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    chat_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        ForeignKey("chats.id"),
-        nullable=False,
-    )
-
-    chat: Mapped["Chat"] = relationship(back_populates="messages")
+    messages: Mapped["ChatMessage"] = relationship(back_populates="chat")
+    
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -42,4 +35,4 @@ class ChatMessage(Base):
     )
 
     def __repr__(self) -> str:
-        return f"ChatMessage(id={self.id!r}, owner_id={self.owner_id!r}, role={self.role!r})"
+        return f"Chat(id={self.id!r}, owner_id={self.owner_id!r})"
