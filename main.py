@@ -8,7 +8,7 @@ from backend.api.chat import router as chat_router
 from backend.core import settings
 from backend.core.db import engine as db_engine
 from backend.core.redis import redis_client
-from backend.agent.memory.checkpointer import connection_pool
+from backend.agent.memory import connection_pool
 from backend.agent.utils.rag import init_collection_if_not_exists
 
 

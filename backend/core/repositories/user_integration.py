@@ -23,7 +23,7 @@ class UserIntegrationRepository:
 
     async def save_github_token(
         self,
-        user_id: uuid.UUID,
+        user_id: str | uuid.UUID,
         token: str,
     ) -> UserIntegration:
         result = await self.session.execute(
