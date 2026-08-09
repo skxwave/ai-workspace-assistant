@@ -24,13 +24,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Chat"])
 
 
-@router.post("")
+@router.get("")
+async def get_chat_list(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    chats, total = await chat_service.get_chat_list(
+        owner_id=current_user.id,
+        limit=limit,
+        offset=offset,
+    )
+
+    return ChatsPage(
+        chats=[
+            ChatOut(id=str(c.id), created_at=c.created_at) for c in chats
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=offset + limit < total,
+    )
+
+
+@router.post("", response_model=ChatOut)
 async def create_chat(
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    chat_id = await chat_service.create_chat(owner_id=current_user.id)
-    return {"chat_id": chat_id}
+    chat = await chat_service.create_chat(owner_id=current_user.id)
+    return ChatOut(id=str(chat.id), created_at=chat.created_at)
 
 
 @router.post("/{chat_id}/invoke")
@@ -175,30 +199,6 @@ async def graph_state(
         chat_id=chat_id,
     )
     return {"state": state}
-
-
-@router.get("")
-async def get_chat_list(
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    chat_service: Annotated[ChatService, Depends(get_chat_service)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    offset: Annotated[int, Query(ge=0)] = 0,
-):
-    chats, total = await chat_service.get_chat_list(
-        owner_id=current_user.id,
-        limit=limit,
-        offset=offset,
-    )
-
-    return ChatsPage(
-        chats=[
-            ChatOut(id=str(c.id)) for c in chats
-        ],
-        total=total,
-        limit=limit,
-        offset=offset,
-        has_more=offset + limit < total,
-    )
 
 
 @router.post("/documents", status_code=status.HTTP_201_CREATED)

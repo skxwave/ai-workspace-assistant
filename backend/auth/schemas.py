@@ -27,3 +27,7 @@ class TokenPair(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class IntegrationsStatus(BaseModel):
+    github: bool

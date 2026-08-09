@@ -11,9 +11,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from backend.agent.memory.checkpointer import get_checkpointer
-from backend.agent.memory import connection_pool
-from backend.agent.memory.store import get_store
+from backend.agent.memory import get_shared_checkpointer, get_shared_store
 from backend.agent.utils.state import MessagesState
 from backend.agent.utils.prompts import system_prompt_template
 from backend.core import settings
@@ -143,8 +141,8 @@ class WorkspaceAgent:
             checkpointer = InMemorySaver()
             store = InMemoryStore()
         else:
-            checkpointer = await get_checkpointer(connection_pool)
-            store = await get_store(connection_pool)
+            checkpointer = await get_shared_checkpointer()
+            store = await get_shared_store()
 
         agent = builder.compile(
             checkpointer=checkpointer,

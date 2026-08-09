@@ -7,7 +7,13 @@ import httpx
 
 from backend.core import settings
 from backend.auth.dependencies import get_current_active_user, oauth2_scheme
-from backend.auth.schemas import RefreshRequest, TokenPair, UserCreate, UserRead
+from backend.auth.schemas import (
+    IntegrationsStatus,
+    RefreshRequest,
+    TokenPair,
+    UserCreate,
+    UserRead,
+)
 from backend.core.models.user import User
 from backend.core.repositories.user_integration import (
     UserIntegrationRepository,
@@ -67,6 +73,27 @@ async def logout(
 @router.get("/me", response_model=UserRead)
 async def me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
+
+
+@router.get("/integrations", response_model=IntegrationsStatus)
+async def get_integrations(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    integration_repo: Annotated[
+        UserIntegrationRepository, Depends(get_user_integration_repository)
+    ],
+):
+    token = await integration_repo.get_github_token(current_user.id)
+    return IntegrationsStatus(github=bool(token))
+
+
+@router.delete("/github", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_github(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    integration_repo: Annotated[
+        UserIntegrationRepository, Depends(get_user_integration_repository)
+    ],
+):
+    await integration_repo.clear_github_token(current_user.id)
 
 
 @router.get("/github/auth_url")

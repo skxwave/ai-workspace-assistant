@@ -60,9 +60,8 @@ class ChatService:
         self,
         *,
         owner_id: UUID,
-    ) -> UUID:
-        chat = await self.chat_repo.save(owner_id=owner_id)
-        return chat.id
+    ) -> Chat:
+        return await self.chat_repo.save(owner_id=owner_id)
 
     async def send_message(
         self,

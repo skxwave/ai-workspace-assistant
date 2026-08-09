@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -23,7 +24,8 @@ class MessagesPage(BaseModel):
 
 
 class ChatOut(BaseModel):
-    id: str | None = None
+    id: str
+    created_at: datetime
 
 
 class ChatsPage(BaseModel):
