@@ -1,6 +1,6 @@
 # AI Workspace Assistant
 
-AI Workspace Assistant is an internal AI assistant for engineers. It helps answer questions about the codebase and documentation, use internal tools, and connect with external services through MCP tools.
+AI Workspace Assistant is a pet project for building an internal AI assistant for engineers. It helps answer questions about the codebase and documentation, use internal tools, and connect with external services through MCP tools.
 
 ## What it can do
 
