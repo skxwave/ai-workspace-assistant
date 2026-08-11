@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,11 @@ from backend.core.db import engine as db_engine
 from backend.core.redis import redis_client
 from backend.agent.memory import connection_pool
 from backend.agent.utils.rag import init_collection_if_not_exists
+
+logging.basicConfig(
+    level=logging.DEBUG if settings.app.debug else logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager

@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator
@@ -7,6 +8,7 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, UploadFile, status
 from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.agent.agent import build_agent
@@ -30,6 +32,8 @@ from backend.core.repositories import (
     get_chat_message_repository,
     get_user_integration_repository,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ChatService:
@@ -86,6 +90,11 @@ class ChatService:
             config=self._config(chat_id),
         )
         reply = result["messages"][-1].text
+        logger.info(
+            "AI response for chat %s used ~%d tokens",
+            chat_id,
+            count_tokens_approximately([AIMessage(content=reply)]),
+        )
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.AI,
@@ -133,6 +142,11 @@ class ChatService:
 
         reply = "".join(reply_chunks)
         if reply:
+            logger.info(
+                "AI response for chat %s used ~%d tokens",
+                chat_id,
+                count_tokens_approximately([AIMessage(content=reply)]),
+            )
             await self.messages_repo.save(
                 owner_id=owner_id,
                 role=MessageRole.AI,
@@ -232,7 +246,17 @@ class ChatService:
         *,
         chat_id: UUID,
     ):
+        """Check graph state (debug)"""
         return await self.agent.aget_state(config=self._config(chat_id))
+
+    async def token_count(
+        self,
+        *,
+        chat_id: UUID,
+    ) -> int:
+        state = await self.agent.aget_state(config=self._config(chat_id))
+        messages = state.values.get("messages", [])
+        return count_tokens_approximately(messages)
 
 
 async def get_chat_service(

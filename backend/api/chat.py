@@ -38,9 +38,7 @@ async def get_chat_list(
     )
 
     return ChatsPage(
-        chats=[
-            ChatOut(id=str(c.id), created_at=c.created_at) for c in chats
-        ],
+        chats=[ChatOut(id=str(c.id), created_at=c.created_at) for c in chats],
         total=total,
         limit=limit,
         offset=offset,
@@ -194,11 +192,12 @@ async def graph_state(
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    state = await chat_service.graph_state(
-        owner_id=current_user.id,
-        chat_id=chat_id,
-    )
-    return {"state": state}
+    state = await chat_service.graph_state(chat_id=chat_id)
+    tokens = await chat_service.token_count(chat_id=chat_id)
+    return {
+        "state": state,
+        "tokens": tokens,
+    }
 
 
 @router.post("/documents", status_code=status.HTTP_201_CREATED)
