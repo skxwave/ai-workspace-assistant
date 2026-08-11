@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+from cryptography.fernet import Fernet, InvalidToken
 
 from backend.core import settings
 
 _hasher = PasswordHasher()
+_fernet = Fernet(settings.auth.token_encryption_key.encode())
 
 
 def hash_password(password: str) -> str:
@@ -55,3 +57,14 @@ def create_github_oauth_state(user_id: uuid.UUID) -> str:
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.auth.secret_key, algorithms=[settings.auth.algorithm])
+
+
+def encrypt_secret(value: str) -> str:
+    return _fernet.encrypt(value.encode()).decode()
+
+
+def decrypt_secret(value: str) -> str | None:
+    try:
+        return _fernet.decrypt(value.encode()).decode()
+    except InvalidToken:
+        return None

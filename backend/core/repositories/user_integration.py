@@ -5,6 +5,7 @@ from fastapi import Depends
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.auth.security import decrypt_secret, encrypt_secret
 from backend.core.db import get_db
 from backend.core.models.user_integrations import UserIntegration
 
@@ -19,24 +20,29 @@ class UserIntegrationRepository:
                 UserIntegration.user_id == user_id
             )
         )
-        return result.scalar()
+        encrypted_token = result.scalar()
+        if encrypted_token is None:
+            return None
+        return decrypt_secret(encrypted_token)
 
     async def save_github_token(
         self,
         user_id: str | uuid.UUID,
         token: str,
     ) -> UserIntegration:
+        encrypted_token = encrypt_secret(token)
+
         result = await self.session.execute(
             select(UserIntegration).where(UserIntegration.user_id == user_id)
         )
         integration = result.scalar()
 
         if integration:
-            integration.github_access_token = token
+            integration.github_access_token = encrypted_token
         else:
             integration = UserIntegration(
                 user_id=user_id,
-                github_access_token=token,
+                github_access_token=encrypted_token,
             )
             self.session.add(integration)
 
