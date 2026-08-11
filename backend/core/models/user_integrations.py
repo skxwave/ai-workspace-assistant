@@ -13,7 +13,12 @@ class UserIntegration(Base):
     __tablename__ = "user_integrations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    # Token is encrypted
     github_access_token: Mapped[str | None] = mapped_column(nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="integrations")
