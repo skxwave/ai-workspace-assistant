@@ -8,7 +8,9 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, UploadFile, status
 from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages.utils import count_tokens_approximately
+from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.agent.agent import build_agent
@@ -20,6 +22,7 @@ from backend.agent.utils.ingestion import (
 from backend.agent.utils.rag import vector_store
 from backend.agent.utils.tools import get_tools_list
 from backend.auth.dependencies import get_current_active_user
+from backend.core import settings
 from backend.core.constants import MAX_UPLOAD_SIZE, MessageRole
 from backend.core.models.chat import Chat
 from backend.core.models.message import ChatMessage
@@ -44,12 +47,14 @@ class ChatService:
         messages_repo: ChatMessageRepository,
         github_token: str,
         missing_integrations: list[str],
+        langfuse_handler: BaseCallbackHandler,
     ):
         self.agent = agent
         self.chat_repo = chat_repo
         self.messages_repo = messages_repo
         self.github_token = github_token
         self.missing_integrations = missing_integrations
+        self.langfuse_handler = langfuse_handler
 
     def _config(self, chat_id: UUID) -> dict:
         return {
@@ -57,7 +62,8 @@ class ChatService:
                 "thread_id": chat_id,
                 "github_token": self.github_token,
                 "missing_integrations": self.missing_integrations,
-            }
+            },
+            "callbacks": [self.langfuse_handler]
         }
 
     async def create_chat(
@@ -278,10 +284,13 @@ async def get_chat_service(
         github_token = ""
 
     agent = await build_agent(tools)
+    langfuse_handler = CallbackHandler(public_key=settings.langfuse.public_key)
+
     return ChatService(
         agent=agent,
         chat_repo=chat_repo,
         messages_repo=messages_repo,
         github_token=github_token,
         missing_integrations=missing_integrations,
+        langfuse_handler=langfuse_handler,
     )

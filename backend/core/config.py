@@ -68,6 +68,13 @@ class Auth(BaseModel):
     token_encryption_key: str
 
 
+class Langfuse(BaseModel):
+    public_key: str
+    secret_key: str
+    host: str = "https://cloud.langfuse.com"
+    enabled: bool = True
+
+
 class Settings(BaseSettings):
     app: App = App()
     agent: Agent = Agent()
@@ -75,6 +82,7 @@ class Settings(BaseSettings):
     db: DB
     llms: LLMs
     tools: Tools
+    langfuse: Langfuse
 
     model_config = SettingsConfigDict(
         env_prefix="BOT__",

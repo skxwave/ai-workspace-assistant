@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langfuse import Langfuse
 
 from backend.api.auth import router as auth_router
 from backend.api.chat import router as chat_router
@@ -15,6 +16,13 @@ from backend.agent.utils.rag import init_collection_if_not_exists
 logging.basicConfig(
     level=logging.DEBUG if settings.app.debug else logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+langfuse_client = Langfuse(
+    public_key=settings.langfuse.public_key,
+    secret_key=settings.langfuse.secret_key,
+    host=settings.langfuse.host,
+    tracing_enabled=settings.langfuse.enabled,
 )
 
 
