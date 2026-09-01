@@ -12,6 +12,15 @@ class Tools(BaseModel):
     github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
 
 
+class Integrations(BaseModel):
+    schema_ttl_seconds: int = 3600
+    schema_refresh_interval_seconds: int = 1800
+    schema_cache_size: int = 128
+    failure_threshold: int = 3
+    breaker_cooldown_seconds: int = 30
+    discovery_tokens: dict[str, str] = {}
+
+
 class LLMs(BaseModel):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_gpt_4o_mini: str = "4o-mini"
@@ -82,6 +91,7 @@ class Settings(BaseSettings):
     db: DB
     llms: LLMs
     tools: Tools
+    integrations: Integrations = Integrations()
     langfuse: Langfuse
 
     model_config = SettingsConfigDict(

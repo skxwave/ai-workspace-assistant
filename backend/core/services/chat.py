@@ -10,20 +10,23 @@ from fastapi import Depends, HTTPException, UploadFile, status
 from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages.utils import count_tokens_approximately
-from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
-from backend.agent.agent import build_agent
+from backend.agent.agent import get_shared_agent
+from backend.agent.integrations import (
+    INTEGRATION_TOKENS_KEY,
+    IntegrationState,
+    mcp_tool_manager,
+)
 from backend.agent.utils.ingestion import (
     chunk_documents,
     get_loader,
     supported_extensions,
 )
 from backend.agent.utils.rag import vector_store
-from backend.agent.utils.tools import get_tools_list
 from backend.auth.dependencies import get_current_active_user
-from backend.core import settings
-from backend.core.constants import MAX_UPLOAD_SIZE, MessageRole
+from backend.core.constants import MAX_UPLOAD_SIZE, IntegrationStatus, MessageRole
+from backend.core.observability import get_langfuse_handler
 from backend.core.models.chat import Chat
 from backend.core.models.message import ChatMessage
 from backend.core.models.user import User
@@ -45,25 +48,28 @@ class ChatService:
         agent: CompiledStateGraph,
         chat_repo: ChatRepository,
         messages_repo: ChatMessageRepository,
-        github_token: str,
-        missing_integrations: list[str],
+        tools: list,
+        integrations: tuple[IntegrationState, ...],
+        integration_tokens: dict[str, str],
         langfuse_handler: BaseCallbackHandler,
     ):
         self.agent = agent
         self.chat_repo = chat_repo
         self.messages_repo = messages_repo
-        self.github_token = github_token
-        self.missing_integrations = missing_integrations
+        self.tools = tools
+        self.integrations = integrations
+        self.integration_tokens = integration_tokens
         self.langfuse_handler = langfuse_handler
 
     def _config(self, chat_id: UUID) -> dict:
         return {
             "configurable": {
                 "thread_id": chat_id,
-                "github_token": self.github_token,
-                "missing_integrations": self.missing_integrations,
+                "tools": self.tools,
+                "integrations": self.integrations,
+                INTEGRATION_TOKENS_KEY: self.integration_tokens,
             },
-            "callbacks": [self.langfuse_handler]
+            "callbacks": [self.langfuse_handler],
         }
 
     async def create_chat(
@@ -275,22 +281,21 @@ async def get_chat_service(
         UserIntegrationRepository, Depends(get_user_integration_repository)
     ],
 ) -> ChatService:
-    github_token = await integration_repo.get_github_token(current_user.id) or ""
-    tokens = {"github": github_token} if github_token else {}
-    tools, missing_integrations, expired_integrations = await get_tools_list(tokens)
+    tokens = await integration_repo.get_tokens(current_user.id)
+    bundle = await mcp_tool_manager.build_bundle(tokens)
 
-    if "github" in expired_integrations:
-        await integration_repo.clear_github_token(current_user.id)
-        github_token = ""
-
-    agent = await build_agent(tools)
-    langfuse_handler = CallbackHandler(public_key=settings.langfuse.public_key)
+    for name in bundle.with_status(IntegrationStatus.EXPIRED):
+        await integration_repo.set_status(
+            current_user.id, name, IntegrationStatus.EXPIRED
+        )
+        tokens.pop(name, None)
 
     return ChatService(
-        agent=agent,
+        agent=await get_shared_agent(),
         chat_repo=chat_repo,
         messages_repo=messages_repo,
-        github_token=github_token,
-        missing_integrations=missing_integrations,
-        langfuse_handler=langfuse_handler,
+        tools=bundle.tools,
+        integrations=bundle.integrations,
+        integration_tokens=tokens,
+        langfuse_handler=get_langfuse_handler(),
     )

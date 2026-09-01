@@ -1,6 +1,10 @@
+from collections.abc import Iterable
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
+from backend.agent.integrations.base import IntegrationState
 from backend.core import settings
+from backend.core.constants import IntegrationStatus
 
 SYSTEM_PROMPT = f"""You are {settings.app.title}, {settings.app.description}.
 
@@ -28,3 +32,32 @@ system_prompt_template = ChatPromptTemplate.from_messages(
         MessagesPlaceholder(variable_name="messages"),
     ]
 )
+
+_STATUS_NOTICES = {
+    IntegrationStatus.NOT_CONNECTED: (
+        "The user has not connected these integrations: {names}. If their request "
+        "needs one, tell them to connect it instead of guessing or refusing silently."
+    ),
+    IntegrationStatus.EXPIRED: (
+        "These integrations rejected the user's stored credentials and must be "
+        "reconnected: {names}. Say so plainly if their request needs one."
+    ),
+    IntegrationStatus.DEGRADED: (
+        "These integrations are temporarily unreachable: {names}. Tell the user to "
+        "retry shortly rather than guessing at an answer."
+    ),
+}
+
+
+def integration_notice(integrations: Iterable[IntegrationState]) -> str | None:
+    grouped: dict[IntegrationStatus, list[str]] = {}
+    for state in integrations:
+        if state.status is not IntegrationStatus.CONNECTED:
+            grouped.setdefault(state.status, []).append(state.name)
+
+    lines = [
+        template.format(names=", ".join(sorted(grouped[status])))
+        for status, template in _STATUS_NOTICES.items()
+        if status in grouped
+    ]
+    return "\n".join(lines) if lines else None

@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from langchain_core.messages import (
     AIMessage,
     RemoveMessage,
@@ -5,24 +8,24 @@ from langchain_core.messages import (
     ToolMessage,
     trim_messages,
 )
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langgraph.config import get_config
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.store.memory import InMemoryStore
 
 from backend.agent.memory import get_shared_checkpointer, get_shared_store
+from backend.agent.utils.prompts import integration_notice, system_prompt_template
 from backend.agent.utils.state import MessagesState
-from backend.agent.utils.prompts import system_prompt_template
 from backend.core import settings
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.store.memory import InMemoryStore
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceAgent:
-    def __init__(self, tools: list):
-        self.tools = tools
-
+    def __init__(self) -> None:
         self._chat_llm = self._create_llm(
             model=settings.llms.openai_gpt_5_4,
             temperature=0.8,
@@ -41,8 +44,6 @@ class WorkspaceAgent:
             start_on="human",
         )
 
-        self._llm_chain = system_prompt_template | self._chat_llm.bind_tools(tools=self.tools)
-
     def _create_llm(self, model: str, temperature: float) -> ChatOpenAI:
         return ChatOpenAI(
             model=model,
@@ -51,7 +52,8 @@ class WorkspaceAgent:
             temperature=temperature,
         )
 
-    async def _chat_node(self, state: MessagesState) -> dict:
+    async def _chat_node(self, state: MessagesState, config: RunnableConfig) -> dict:
+        configurable = config["configurable"]
         trimmed_messages = await self._trimmer.ainvoke(state["messages"])
 
         summary = state.get("summary", "")
@@ -69,18 +71,18 @@ class WorkspaceAgent:
                 )
             ] + trimmed_messages
 
-        missing_integrations = get_config()["configurable"].get("missing_integrations")
-        if missing_integrations:
-            trimmed_messages = [
-                SystemMessage(
-                    content=f"The user has not connected these integrations: "
-                    f"{missing_integrations}. If their request needs one, tell "
-                    f"them to connect it instead of guessing or refusing silently."
-                )
-            ] + trimmed_messages
+        notice = integration_notice(configurable.get("integrations", ()))
+        if notice:
+            trimmed_messages = [SystemMessage(content=notice)] + trimmed_messages
 
-        response = await self._llm_chain.ainvoke({"messages": trimmed_messages})
+        chain = system_prompt_template | self._chat_llm.bind_tools(
+            tools=configurable["tools"]
+        )
+        response = await chain.ainvoke({"messages": trimmed_messages})
         return {"messages": [response], "attached_file_ids": None}
+
+    async def _tools_node(self, state: MessagesState, config: RunnableConfig) -> dict:
+        return await ToolNode(config["configurable"]["tools"]).ainvoke(state, config)
 
     async def _summarize_node(self, state: MessagesState) -> dict:
         summary = state.get("summary", "")
@@ -128,7 +130,7 @@ class WorkspaceAgent:
 
         builder.add_node("chat_node", self._chat_node)
         builder.add_node("summarize_node", self._summarize_node)
-        builder.add_node("tools", ToolNode(self.tools))
+        builder.add_node("tools", self._tools_node)
 
         builder.set_entry_point("chat_node")
         builder.add_conditional_edges("chat_node", tools_condition)
@@ -144,13 +146,19 @@ class WorkspaceAgent:
             checkpointer = await get_shared_checkpointer()
             store = await get_shared_store()
 
-        agent = builder.compile(
-            checkpointer=checkpointer,
-            store=store,
-        )
-        return agent
+        return builder.compile(checkpointer=checkpointer, store=store)
 
 
-async def build_agent(tools: list) -> CompiledStateGraph:
-    workspace_agent = WorkspaceAgent(tools=tools)
-    return await workspace_agent.build_graph()
+_agent: CompiledStateGraph | None = None
+_agent_lock = asyncio.Lock()
+
+
+async def get_shared_agent() -> CompiledStateGraph:
+    """Compile the graph once per process; tools arrive per request via config."""
+    global _agent
+    if _agent is None:
+        async with _agent_lock:
+            if _agent is None:
+                _agent = await WorkspaceAgent().build_graph()
+                logger.info("Workspace agent graph compiled")
+    return _agent

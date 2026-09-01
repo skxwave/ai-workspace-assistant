@@ -1,6 +1,8 @@
 import uuid
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, RootModel
+
+from backend.core.constants import IntegrationStatus
 
 
 class UserCreate(BaseModel):
@@ -29,5 +31,5 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
-class IntegrationsStatus(BaseModel):
-    github: bool
+class IntegrationsStatus(RootModel[dict[str, IntegrationStatus]]):
+    root: dict[str, IntegrationStatus]

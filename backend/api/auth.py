@@ -1,11 +1,14 @@
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 import httpx
 
+from backend.agent.integrations import integration_registry
 from backend.core import settings
+from backend.core.constants import IntegrationStatus
 from backend.auth.dependencies import get_current_active_user, oauth2_scheme
 from backend.auth.schemas import (
     IntegrationsStatus,
@@ -82,18 +85,29 @@ async def get_integrations(
         UserIntegrationRepository, Depends(get_user_integration_repository)
     ],
 ):
-    token = await integration_repo.get_github_token(current_user.id)
-    return IntegrationsStatus(github=bool(token))
+    stored = await integration_repo.list_states(current_user.id)
+    return IntegrationsStatus(
+        {
+            name: stored.get(name, IntegrationStatus.NOT_CONNECTED)
+            for name in sorted(integration_registry.names())
+        }
+    )
 
 
-@router.delete("/github", status_code=status.HTTP_204_NO_CONTENT)
-async def disconnect_github(
+@router.delete("/integrations/{provider}", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_integration(
+    provider: str,
     current_user: Annotated[User, Depends(get_current_active_user)],
     integration_repo: Annotated[
         UserIntegrationRepository, Depends(get_user_integration_repository)
     ],
 ):
-    await integration_repo.clear_github_token(current_user.id)
+    if not integration_registry.has(provider):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown integration: {provider}",
+        )
+    await integration_repo.delete(current_user.id, provider)
 
 
 @router.get("/github/auth_url")
@@ -134,8 +148,7 @@ async def github_callback(
                 detail="Failed to retrieve token from GitHub",
             )
 
-        # TODO: encrypt before storing
-        await integration_repo.save_github_token(state, access_token)
+        await integration_repo.upsert(UUID(state), "github", access_token)
 
         return RedirectResponse(
             settings.app.frontend_url,

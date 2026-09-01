@@ -44,7 +44,7 @@ vector_store = QdrantVectorStore(
 
 
 @lru_cache(maxsize=1)
-def _get_retriever():
+def get_retriever():
     return vector_store.as_retriever(
         search_type="similarity",
         search_kwargs={
