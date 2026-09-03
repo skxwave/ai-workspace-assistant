@@ -14,8 +14,9 @@ from langgraph.graph.state import CompiledStateGraph
 
 from backend.agent.agent import get_shared_agent
 from backend.agent.integrations import (
-    INTEGRATION_TOKENS_KEY,
     IntegrationState,
+    McpToolManager,
+    ToolBundle,
     mcp_tool_manager,
 )
 from backend.agent.utils.ingestion import (
@@ -48,29 +49,52 @@ class ChatService:
         agent: CompiledStateGraph,
         chat_repo: ChatRepository,
         messages_repo: ChatMessageRepository,
-        tools: list,
-        integrations: tuple[IntegrationState, ...],
+        integration_repo: UserIntegrationRepository,
+        tool_manager: McpToolManager,
         integration_tokens: dict[str, str],
+        owner_id: UUID,
         langfuse_handler: BaseCallbackHandler,
     ):
         self.agent = agent
         self.chat_repo = chat_repo
         self.messages_repo = messages_repo
-        self.tools = tools
-        self.integrations = integrations
+        self.integration_repo = integration_repo
+        self.tool_manager = tool_manager
         self.integration_tokens = integration_tokens
+        self.owner_id = owner_id
         self.langfuse_handler = langfuse_handler
 
-    def _config(self, chat_id: UUID) -> dict:
+    def _config(self, chat_id: UUID, bundle: ToolBundle | None = None) -> dict:
+        integrations = bundle.integrations if bundle else ()
         return {
             "configurable": {
                 "thread_id": chat_id,
-                "tools": self.tools,
-                "integrations": self.integrations,
-                INTEGRATION_TOKENS_KEY: self.integration_tokens,
+                "tools": bundle.tools if bundle else [],
+                "integrations": integrations,
             },
             "callbacks": [self.langfuse_handler],
+            "run_name": "workspace-chat",
+            "metadata": {
+                "langfuse_trace_name": "workspace-chat",
+                "langfuse_session_id": str(chat_id),
+                "langfuse_user_id": str(self.owner_id),
+                "langfuse_tags": [
+                    state.name
+                    for state in integrations
+                    if state.status is IntegrationStatus.CONNECTED
+                ],
+            },
         }
+
+    async def _persist_expired(
+        self, integrations: tuple[IntegrationState, ...]
+    ) -> None:
+        for state in integrations:
+            if state.status is IntegrationStatus.EXPIRED:
+                await self.integration_repo.set_status(
+                    self.owner_id, state.name, IntegrationStatus.EXPIRED
+                )
+                self.integration_tokens.pop(state.name, None)
 
     async def create_chat(
         self,
@@ -94,13 +118,15 @@ class ChatService:
             chat_id=chat_id,
         )
 
-        result = await self.agent.ainvoke(
-            input={
-                "messages": [HumanMessage(content=message)],
-                "attached_file_ids": attached_file_ids,
-            },
-            config=self._config(chat_id),
-        )
+        async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
+            await self._persist_expired(bundle.integrations)
+            result = await self.agent.ainvoke(
+                input={
+                    "messages": [HumanMessage(content=message)],
+                    "attached_file_ids": attached_file_ids,
+                },
+                config=self._config(chat_id, bundle),
+            )
         reply = result["messages"][-1].text
         logger.info(
             "AI response for chat %s used ~%d tokens",
@@ -131,26 +157,28 @@ class ChatService:
         )
 
         reply_chunks: list[str] = []
-        async for chunk in self.agent.astream(
-            input={
-                "messages": [HumanMessage(content=message)],
-                "attached_file_ids": attached_file_ids,
-            },
-            config=self._config(chat_id),
-            stream_mode="messages",
-            version="v2",
-        ):
-            msg, _ = chunk["data"]
+        async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
+            await self._persist_expired(bundle.integrations)
+            async for chunk in self.agent.astream(
+                input={
+                    "messages": [HumanMessage(content=message)],
+                    "attached_file_ids": attached_file_ids,
+                },
+                config=self._config(chat_id, bundle),
+                stream_mode="messages",
+                version="v2",
+            ):
+                msg, _ = chunk["data"]
 
-            if not isinstance(msg, (AIMessage, AIMessageChunk)):
-                continue
+                if not isinstance(msg, (AIMessage, AIMessageChunk)):
+                    continue
 
-            text = msg.text
-            if not text:
-                continue
+                text = msg.text
+                if not text:
+                    continue
 
-            reply_chunks.append(text)
-            yield text
+                reply_chunks.append(text)
+                yield text
 
         reply = "".join(reply_chunks)
         if reply:
@@ -281,21 +309,13 @@ async def get_chat_service(
         UserIntegrationRepository, Depends(get_user_integration_repository)
     ],
 ) -> ChatService:
-    tokens = await integration_repo.get_tokens(current_user.id)
-    bundle = await mcp_tool_manager.build_bundle(tokens)
-
-    for name in bundle.with_status(IntegrationStatus.EXPIRED):
-        await integration_repo.set_status(
-            current_user.id, name, IntegrationStatus.EXPIRED
-        )
-        tokens.pop(name, None)
-
     return ChatService(
         agent=await get_shared_agent(),
         chat_repo=chat_repo,
         messages_repo=messages_repo,
-        tools=bundle.tools,
-        integrations=bundle.integrations,
-        integration_tokens=tokens,
+        integration_repo=integration_repo,
+        tool_manager=mcp_tool_manager,
+        integration_tokens=await integration_repo.get_tokens(current_user.id),
+        owner_id=current_user.id,
         langfuse_handler=get_langfuse_handler(),
     )

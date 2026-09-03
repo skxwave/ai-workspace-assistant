@@ -10,6 +10,7 @@ class Tools(BaseModel):
     github_client_id: str
     github_client_secret: str
     github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
+    github_toolsets: list[str] = ["context", "repos", "pull_requests", "issues"]
 
 
 class Integrations(BaseModel):
@@ -28,6 +29,8 @@ class LLMs(BaseModel):
     openai_gpt_5_4: str = "gpt-5.4"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_api_key: str
+    openai_chat_temperature: float = 0.2
+    openai_summarize_temperature: float = 0.5
 
 
 class App(BaseModel):

@@ -5,7 +5,6 @@ from backend.core.redis import redis_client
 
 from .base import IntegrationProvider, IntegrationState
 from .health import IntegrationHealth
-from .interceptors import INTEGRATION_TOKENS_KEY
 from .manager import McpToolManager, ToolBundle
 from .providers import register_all
 from .registry import integration_registry
@@ -35,7 +34,6 @@ mcp_tool_manager = McpToolManager(
 )
 
 __all__ = [
-    "INTEGRATION_TOKENS_KEY",
     "IntegrationProvider",
     "IntegrationState",
     "IntegrationStatus",

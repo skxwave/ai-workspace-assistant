@@ -21,5 +21,6 @@ class IntegrationProvider:
     response_interceptors: tuple[ToolCallInterceptor, ...] = ()
     per_user_schema: bool = False
     tool_name_prefix: bool = False
+    tool_allowlist: frozenset[str] = frozenset()
     discovery_timeout: float = 20.0
     max_concurrency: int = 10

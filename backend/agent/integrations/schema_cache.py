@@ -3,19 +3,13 @@ import hashlib
 import json
 import logging
 
-from langchain_core.tools import BaseTool
 from mcp.types import Tool as McpTool
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from .base import IntegrationProvider
-from .interceptors import default_chain
 from .local_cache import TtlLruCache
-from .mcp_client import (
-    authenticated_connection,
-    discover_tool_definitions,
-    hydrate_tools,
-)
+from .mcp_client import authenticated_connection, discover_tool_definitions
 from .registry import IntegrationRegistry
 
 logger = logging.getLogger(__name__)
@@ -29,12 +23,11 @@ LOCK_TTL_SECONDS = 30
 
 
 class SchemaCache:
-    """Tool definitions per integration, shared by every tenant and worker.
+    """MCP tool definitions per integration, shared by every tenant and worker.
 
     A hosted MCP server exposes the same catalogue to everyone, so discovery
     runs once per integration per TTL rather than once per request. Definitions
-    live in Redis for the whole fleet and are fronted by a process-local LRU;
-    hydration into LangChain tools is CPU-only and credential-free.
+    live in Redis for the whole fleet and are fronted by a process-local LRU.
     """
 
     def __init__(
@@ -52,10 +45,12 @@ class SchemaCache:
         self._ttl_seconds = ttl_seconds
         self._refresh_interval_seconds = refresh_interval_seconds
         self._discovery_tokens = discovery_tokens
-        self._local: TtlLruCache[list[BaseTool]] = TtlLruCache(max_entries)
+        self._local: TtlLruCache[list[McpTool]] = TtlLruCache(max_entries)
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def get(self, provider: IntegrationProvider, token: str) -> list[BaseTool]:
+    async def definitions(
+        self, provider: IntegrationProvider, token: str
+    ) -> list[McpTool]:
         key = self._key(provider, token)
         cached = self._local.get(key)
         if cached is not None:
@@ -66,14 +61,16 @@ class SchemaCache:
             if cached is not None:
                 return cached
             definitions = await self._resolve_definitions(key, provider, token)
-            return self._store(key, provider, definitions)
+            self._local.set(key, definitions, self._ttl_seconds)
+            return definitions
 
-    async def refresh(self, provider: IntegrationProvider, token: str) -> list[BaseTool]:
+    async def refresh(self, provider: IntegrationProvider, token: str) -> list[McpTool]:
         key = self._key(provider, token)
         async with self._lock_for(key):
             definitions = await self._discover(provider, token)
             await self._write_redis(key, definitions)
-            return self._store(key, provider, definitions)
+            self._local.set(key, definitions, self._ttl_seconds)
+            return definitions
 
     async def run_refresh_loop(self) -> None:
         """Keep fleet-wide schemas warm so no user request pays for discovery.
@@ -91,12 +88,15 @@ class SchemaCache:
                 try:
                     await self.refresh(provider, token)
                 except Exception:
-                    logger.exception("Scheduled schema refresh failed for %s", provider.name)
+                    logger.exception(
+                        "Scheduled schema refresh failed for %s", provider.name
+                    )
 
     def _key(self, provider: IntegrationProvider, token: str) -> str:
-        if not provider.per_user_schema:
-            return provider.name
-        return f"{provider.name}:{_fingerprint(token)}"
+        suffix = _connection_fingerprint(provider)
+        if provider.per_user_schema:
+            suffix = f"{suffix}:{_fingerprint(token)}"
+        return f"{provider.name}:{suffix}"
 
     def _lock_for(self, key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -109,22 +109,6 @@ class SchemaCache:
         if provider.per_user_schema:
             return token
         return self._discovery_tokens.get(provider.name) or token
-
-    def _store(
-        self,
-        key: str,
-        provider: IntegrationProvider,
-        definitions: list[McpTool],
-    ) -> list[BaseTool]:
-        tools = hydrate_tools(
-            definitions,
-            connection=provider.build_connection(),
-            server_name=provider.name,
-            interceptors=default_chain(self._registry, provider),
-            tool_name_prefix=provider.tool_name_prefix,
-        )
-        self._local.set(key, tools, self._ttl_seconds)
-        return tools
 
     async def _resolve_definitions(
         self,
@@ -216,3 +200,8 @@ class SchemaCache:
 
 def _fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _connection_fingerprint(provider: IntegrationProvider) -> str:
+    blob = json.dumps(provider.build_connection(), sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:8]
