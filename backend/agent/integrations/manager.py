@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +27,12 @@ class _LazySession:
     """Opens and initializes the MCP session on the first tool call, then reuses it.
 
     A request that never invokes a tool pays no MCP handshake.
+
+    The session is held open by a task of its own. Its transport keeps an anyio
+    cancel scope, and anyio requires that scope be exited in the task that
+    entered it — but the first tool call runs in a LangGraph node task, while
+    the request's exit stack unwinds in the task that opened it. Owning the
+    session here keeps both ends in one task; the stack only signals the close.
     """
 
     def __init__(
@@ -37,18 +43,48 @@ class _LazySession:
         self._timeout = timeout
         self._session: Any = None
         self._lock = asyncio.Lock()
+        self._ready = asyncio.Event()
+        self._closing = asyncio.Event()
+        self._failure: BaseException | None = None
 
     async def call_tool(self, *args: Any, **kwargs: Any):
         if self._session is None:
             async with self._lock:
                 if self._session is None:
-                    async with asyncio.timeout(self._timeout):
-                        session = await self._stack.enter_async_context(
-                            create_session(self._connection)
-                        )
-                        await session.initialize()
-                    self._session = session
+                    await self._open()
         return await self._session.call_tool(*args, **kwargs)
+
+    async def _open(self) -> None:
+        owner = asyncio.create_task(self._hold_session())
+        self._stack.push_async_callback(self._close, owner)
+
+        try:
+            async with asyncio.timeout(self._timeout):
+                await self._ready.wait()
+        except TimeoutError:
+            owner.cancel()
+            raise
+
+        if self._failure is not None:
+            raise self._failure
+
+    async def _hold_session(self) -> None:
+        try:
+            async with create_session(self._connection) as session:
+                await session.initialize()
+                self._session = session
+                self._ready.set()
+                await self._closing.wait()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            self._failure = error
+            self._ready.set()
+
+    async def _close(self, owner: asyncio.Task) -> None:
+        self._closing.set()
+        with suppress(asyncio.CancelledError):
+            await owner
 
 
 @dataclass(frozen=True, slots=True)
