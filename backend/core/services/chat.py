@@ -2,8 +2,9 @@ import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, UploadFile, status
@@ -11,6 +12,7 @@ from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
 
 from backend.agent.agent import get_shared_agent
 from backend.agent.integrations import (
@@ -41,6 +43,21 @@ from backend.core.repositories import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class TurnResult:
+    """Either the assistant's answer, or the write calls waiting on the user."""
+
+    reply: str | None = None
+    pending_calls: tuple[dict, ...] = ()
+
+
+def _confirmation_calls(interrupts: Any) -> tuple[dict, ...]:
+    for item in interrupts or ():
+        if isinstance(item.value, dict):
+            return tuple(item.value.get("calls", ()))
+    return ()
 
 
 class ChatService:
@@ -75,6 +92,7 @@ class ChatService:
                 "thread_id": chat_id,
                 "tools": bundle.tools if bundle else [],
                 "integrations": integrations,
+                "confirm_tools": bundle.confirm_tools if bundle else frozenset(),
             },
             "callbacks": [self.langfuse_handler],
             "run_name": "workspace-chat",
@@ -114,36 +132,36 @@ class ChatService:
         chat_id: UUID,
         message: str,
         attached_file_ids: list[str] | None,
-    ) -> str:
+    ) -> TurnResult:
+        await self._reject_while_pending(chat_id)
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.HUMAN,
             content=message,
             chat_id=chat_id,
         )
-
-        async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
-            await self._persist_expired(bundle.integrations)
-            result = await self.agent.ainvoke(
-                input={
-                    "messages": [HumanMessage(content=message)],
-                    "attached_file_ids": attached_file_ids,
-                },
-                config=self._config(chat_id, bundle),
-            )
-        reply = result["messages"][-1].text
-        logger.info(
-            "AI response for chat %s used ~%d tokens",
-            chat_id,
-            count_tokens_approximately([AIMessage(content=reply)]),
-        )
-        await self.messages_repo.save(
+        return await self._run(
             owner_id=owner_id,
-            role=MessageRole.AI,
-            content=reply,
             chat_id=chat_id,
+            graph_input={
+                "messages": [HumanMessage(content=message)],
+                "attached_file_ids": attached_file_ids,
+            },
         )
-        return reply
+
+    async def resume_message(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        approved: bool,
+    ) -> TurnResult:
+        await self._require_pending(chat_id)
+        return await self._run(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input=Command(resume=approved),
+        )
 
     async def stream_message(
         self,
@@ -153,21 +171,80 @@ class ChatService:
         message: str,
         attached_file_ids: list[str] | None,
     ) -> AsyncIterator[str]:
+        await self._reject_while_pending(chat_id)
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.HUMAN,
             content=message,
             chat_id=chat_id,
         )
+        async for text in self._stream(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input={
+                "messages": [HumanMessage(content=message)],
+                "attached_file_ids": attached_file_ids,
+            },
+        ):
+            yield text
 
+    async def resume_stream(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        approved: bool,
+    ) -> AsyncIterator[str]:
+        await self._require_pending(chat_id)
+        async for text in self._stream(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input=Command(resume=approved),
+        ):
+            yield text
+
+    async def pending_calls(
+        self,
+        *,
+        chat_id: UUID,
+    ) -> tuple[dict, ...]:
+        state = await self.agent.aget_state(config=self._config(chat_id))
+        return _confirmation_calls(state.interrupts)
+
+    async def _run(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        graph_input: dict | Command,
+    ) -> TurnResult:
+        async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
+            await self._persist_expired(bundle.integrations)
+            result = await self.agent.ainvoke(
+                input=graph_input,
+                config=self._config(chat_id, bundle),
+            )
+
+        pending = _confirmation_calls(result.get("__interrupt__"))
+        if pending:
+            return TurnResult(pending_calls=pending)
+
+        reply = result["messages"][-1].text
+        await self._save_reply(owner_id=owner_id, chat_id=chat_id, reply=reply)
+        return TurnResult(reply=reply)
+
+    async def _stream(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        graph_input: dict | Command,
+    ) -> AsyncIterator[str]:
         reply_chunks: list[str] = []
         async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
             await self._persist_expired(bundle.integrations)
             async for chunk in self.agent.astream(
-                input={
-                    "messages": [HumanMessage(content=message)],
-                    "attached_file_ids": attached_file_ids,
-                },
+                input=graph_input,
                 config=self._config(chat_id, bundle),
                 stream_mode="messages",
                 version="v2",
@@ -186,16 +263,39 @@ class ChatService:
 
         reply = "".join(reply_chunks)
         if reply:
-            logger.info(
-                "AI response for chat %s used ~%d tokens",
-                chat_id,
-                count_tokens_approximately([AIMessage(content=reply)]),
+            await self._save_reply(owner_id=owner_id, chat_id=chat_id, reply=reply)
+
+    async def _save_reply(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        reply: str,
+    ) -> None:
+        logger.info(
+            "AI response for chat %s used ~%d tokens",
+            chat_id,
+            count_tokens_approximately([AIMessage(content=reply)]),
+        )
+        await self.messages_repo.save(
+            owner_id=owner_id,
+            role=MessageRole.AI,
+            content=reply,
+            chat_id=chat_id,
+        )
+
+    async def _reject_while_pending(self, chat_id: UUID) -> None:
+        if await self.pending_calls(chat_id=chat_id):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "A tool call in this chat is awaiting confirmation",
             )
-            await self.messages_repo.save(
-                owner_id=owner_id,
-                role=MessageRole.AI,
-                content=reply,
-                chat_id=chat_id,
+
+    async def _require_pending(self, chat_id: UUID) -> None:
+        if not await self.pending_calls(chat_id=chat_id):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "No tool call is awaiting confirmation in this chat",
             )
 
     async def get_chat_history(

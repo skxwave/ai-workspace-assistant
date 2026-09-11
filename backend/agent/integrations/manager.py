@@ -20,6 +20,8 @@ from .schema_cache import SchemaCache
 
 logger = logging.getLogger(__name__)
 
+_CONFIRM_METADATA = "requires_confirmation"
+
 
 class _LazySession:
     """Opens and initializes the MCP session on the first tool call, then reuses it.
@@ -53,6 +55,7 @@ class _LazySession:
 class ToolBundle:
     tools: list[BaseTool]
     integrations: tuple[IntegrationState, ...]
+    confirm_tools: frozenset[str] = frozenset()
 
     def with_status(self, status: IntegrationStatus) -> list[str]:
         return [state.name for state in self.integrations if state.status is status]
@@ -94,7 +97,11 @@ class McpToolManager:
                 accepted = self._deduplicate(provider, provider_tools, seen)
                 tools.extend(sorted(accepted, key=lambda tool: tool.name))
 
-            yield ToolBundle(tools=tools, integrations=tuple(states))
+            yield ToolBundle(
+                tools=tools,
+                integrations=tuple(states),
+                confirm_tools=_confirmable(tools),
+            )
 
     async def _enter(
         self,
@@ -140,13 +147,18 @@ class McpToolManager:
             provider.build_connection(), provider.auth_header(token)
         )
         session = _LazySession(stack, connection, provider.discovery_timeout)
-        return hydrate_tools(
+        tools = hydrate_tools(
             definitions,
             server_name=provider.name,
             interceptors=session_chain(provider),
             tool_name_prefix=provider.tool_name_prefix,
             session=session,
         )
+        # hydrate_tools maps one tool per definition, in order.
+        for tool, definition in zip(tools, definitions):
+            if definition.name in provider.confirm_tools:
+                tool.metadata = {**(tool.metadata or {}), _CONFIRM_METADATA: True}
+        return tools
 
     def _deduplicate(
         self,
@@ -166,3 +178,9 @@ class McpToolManager:
             seen.add(tool.name)
             accepted.append(tool)
         return accepted
+
+
+def _confirmable(tools: list[BaseTool]) -> frozenset[str]:
+    return frozenset(
+        tool.name for tool in tools if (tool.metadata or {}).get(_CONFIRM_METADATA)
+    )

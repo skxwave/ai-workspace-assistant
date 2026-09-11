@@ -16,8 +16,10 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import interrupt
 
 from backend.agent.memory import get_shared_checkpointer, get_shared_store
+from backend.agent.utils.confirmation import declined_messages, pending_confirmations
 from backend.agent.utils.prompts import system_prompt_template, turn_context_message
 from backend.agent.utils.state import MessagesState
 from backend.core import settings
@@ -75,8 +77,21 @@ class WorkspaceAgent:
         return {"messages": [response], "attached_file_ids": None}
 
     async def _tools_node(self, state: MessagesState, config: RunnableConfig) -> dict:
-        result = await ToolNode(config["configurable"]["tools"]).ainvoke(state, config)
-        return {**result, "tool_call_count": state.get("tool_call_count", 0) + 1}
+        configurable = config["configurable"]
+        last_message = state["messages"][-1]
+        rounds = state.get("tool_call_count", 0) + 1
+
+        awaiting = pending_confirmations(
+            last_message, configurable.get("confirm_tools", frozenset())
+        )
+        if awaiting and not interrupt({"calls": awaiting}):
+            return {
+                "messages": declined_messages(last_message),
+                "tool_call_count": rounds,
+            }
+
+        result = await ToolNode(configurable["tools"]).ainvoke(state, config)
+        return {**result, "tool_call_count": rounds}
 
     async def _summarize_node(self, state: MessagesState) -> dict:
         summary = state.get("summary", "")

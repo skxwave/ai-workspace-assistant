@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import (
     APIRouter,
     Depends,
+    HTTPException,
     Query,
     UploadFile,
     WebSocket,
@@ -16,12 +17,28 @@ from fastapi.responses import StreamingResponse
 
 from backend.auth.dependencies import get_current_active_user
 from backend.core.models.user import User
-from backend.core.services.chat import ChatService, get_chat_service
-from .schemas import ChatOut, ChatRequest, ChatsPage, MessageOut, MessagesPage
+from backend.core.services.chat import ChatService, TurnResult, get_chat_service
+from .schemas import (
+    ChatOut,
+    ChatReply,
+    ChatRequest,
+    ChatsPage,
+    ConfirmRequest,
+    MessageOut,
+    MessagesPage,
+    ToolCallOut,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Chat"])
+
+
+def _reply(result: TurnResult) -> ChatReply:
+    return ChatReply(
+        message=result.reply,
+        pending_confirmation=[ToolCallOut(**call) for call in result.pending_calls],
+    )
 
 
 @router.get("")
@@ -55,20 +72,35 @@ async def create_chat(
     return ChatOut(id=str(chat.id), created_at=chat.created_at)
 
 
-@router.post("/{chat_id}/invoke")
+@router.post("/{chat_id}/invoke", response_model=ChatReply)
 async def chat_invoke(
     chat_id: UUID,
     request: ChatRequest,
     current_user: Annotated[User, Depends(get_current_active_user)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    reply = await chat_service.send_message(
+    result = await chat_service.send_message(
         owner_id=current_user.id,
         chat_id=chat_id,
         message=request.message,
         attached_file_ids=request.attached_file_ids,
     )
-    return {"message": reply}
+    return _reply(result)
+
+
+@router.post("/{chat_id}/confirm", response_model=ChatReply)
+async def confirm_tool_call(
+    chat_id: UUID,
+    request: ConfirmRequest,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+):
+    result = await chat_service.resume_message(
+        owner_id=current_user.id,
+        chat_id=chat_id,
+        approved=request.approved,
+    )
+    return _reply(result)
 
 
 @router.get("/{chat_id}/messages", response_model=MessagesPage)
@@ -159,29 +191,43 @@ async def websocket_endpoint(
                 )
                 continue
 
-            user_message = data.get("message", "")
-            attached_file_ids = data.get("attached_file_ids")
-
-            if not user_message:
-                continue
-
-            try:
-                async for content in chat_service.stream_message(
+            if data.get("type") == "confirmation":
+                stream = chat_service.resume_stream(
+                    owner_id=current_user.id,
+                    chat_id=chat_id,
+                    approved=bool(data.get("approved")),
+                )
+            else:
+                user_message = data.get("message", "")
+                if not user_message:
+                    continue
+                stream = chat_service.stream_message(
                     owner_id=current_user.id,
                     chat_id=chat_id,
                     message=user_message,
-                    attached_file_ids=attached_file_ids,
-                ):
+                    attached_file_ids=data.get("attached_file_ids"),
+                )
+
+            try:
+                async for content in stream:
                     await websocket.send_json({"content": content})
             except WebSocketDisconnect:
                 raise
+            except HTTPException as error:
+                await websocket.send_json({"type": "error", "detail": error.detail})
             except Exception:
                 logger.exception("Streaming failed for user %s", current_user.id)
                 await websocket.send_json(
                     {"type": "error", "detail": "The assistant failed to answer."}
                 )
             else:
-                await websocket.send_json({"type": "end"})
+                pending = await chat_service.pending_calls(chat_id=chat_id)
+                if pending:
+                    await websocket.send_json(
+                        {"type": "confirmation_required", "calls": list(pending)}
+                    )
+                else:
+                    await websocket.send_json({"type": "end"})
     except WebSocketDisconnect:
         logger.info("Client disconnected from thread: %s", current_user.id)
 

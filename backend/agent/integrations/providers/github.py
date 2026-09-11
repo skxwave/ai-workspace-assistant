@@ -42,6 +42,23 @@ TOOL_ALLOWLIST = frozenset(
     }
 )
 
+# Subset of the allowlist that mutates the user's GitHub; each call waits for approval.
+WRITE_TOOLS = frozenset(
+    {
+        "create_branch",
+        "create_or_update_file",
+        "push_files",
+        "create_pull_request",
+        "update_pull_request",
+        "update_pull_request_branch",
+        "merge_pull_request",
+        "pull_request_review_write",
+        "add_comment_to_pending_review",
+        "issue_write",
+        "add_issue_comment",
+    }
+)
+
 
 def build_connection() -> Connection:
     return {
@@ -68,4 +85,5 @@ github_provider = IntegrationProvider(
         JsonFieldStripInterceptor(server_name=NAME, fields=NOISE_FIELDS),
     ),
     tool_allowlist=TOOL_ALLOWLIST,
+    confirm_tools=WRITE_TOOLS,
 )

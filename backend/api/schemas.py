@@ -9,6 +9,21 @@ class ChatRequest(BaseModel):
     attached_file_ids: list[str] | None = Field(None)
 
 
+class ConfirmRequest(BaseModel):
+    approved: bool
+
+
+class ToolCallOut(BaseModel):
+    id: str | None = None
+    name: str
+    args: dict[str, Any]
+
+
+class ChatReply(BaseModel):
+    message: str | None = None
+    pending_confirmation: list[ToolCallOut] = []
+
+
 class MessageOut(BaseModel):
     id: str | None = None
     type: str
