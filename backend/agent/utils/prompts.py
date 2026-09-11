@@ -69,11 +69,19 @@ def integration_notice(integrations: Iterable[IntegrationState]) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+TOOLS_EXHAUSTED_NOTICE = (
+    "You've reached the tool-call limit for this turn. Answer now using only what "
+    "your tools have already returned — don't attempt another tool call, and tell "
+    "the user plainly if that leaves their request incomplete."
+)
+
+
 def turn_context_message(
     *,
     summary: str,
     attached_file_ids: Sequence[str] | None,
     integrations: Iterable[IntegrationState],
+    tools_exhausted: bool = False,
 ) -> SystemMessage | None:
     """Per-turn context, appended after the history so the prompt prefix stays cacheable."""
     parts: list[str] = []
@@ -87,4 +95,6 @@ def turn_context_message(
             f"User uploaded new files (ids: {ids}); use `search_user_files` with "
             f"file_ids={ids} to look them up."
         )
+    if tools_exhausted:
+        parts.append(TOOLS_EXHAUSTED_NOTICE)
     return SystemMessage("\n\n".join(parts)) if parts else None

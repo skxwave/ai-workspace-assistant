@@ -7,3 +7,4 @@ class MessagesState(TypedDict):
     messages: Annotated[list, add_messages]
     summary: str
     attached_file_ids: list[str] | None = None
+    tool_call_count: int

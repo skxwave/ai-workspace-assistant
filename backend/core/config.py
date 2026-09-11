@@ -4,6 +4,7 @@ from pydantic_settings import SettingsConfigDict, BaseSettings
 
 class Agent(BaseModel):
     is_in_memory: bool = True
+    max_tool_iterations: int = 10
 
 
 class Tools(BaseModel):

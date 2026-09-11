@@ -57,21 +57,26 @@ class WorkspaceAgent:
         configurable = config["configurable"]
         history = await self._trimmer.ainvoke(state["messages"])
 
+        tools_exhausted = (
+            state.get("tool_call_count", 0) >= settings.agent.max_tool_iterations
+        )
+        tools = [] if tools_exhausted else configurable["tools"]
+
         context = turn_context_message(
             summary=state.get("summary", ""),
             attached_file_ids=state.get("attached_file_ids"),
             integrations=configurable.get("integrations", ()),
+            tools_exhausted=tools_exhausted,
         )
         messages = [*history, context] if context else history
 
-        chain = system_prompt_template | self._chat_llm.bind_tools(
-            tools=configurable["tools"]
-        )
+        chain = system_prompt_template | self._chat_llm.bind_tools(tools=tools)
         response = await chain.ainvoke({"messages": messages})
         return {"messages": [response], "attached_file_ids": None}
 
     async def _tools_node(self, state: MessagesState, config: RunnableConfig) -> dict:
-        return await ToolNode(config["configurable"]["tools"]).ainvoke(state, config)
+        result = await ToolNode(config["configurable"]["tools"]).ainvoke(state, config)
+        return {**result, "tool_call_count": state.get("tool_call_count", 0) + 1}
 
     async def _summarize_node(self, state: MessagesState) -> dict:
         summary = state.get("summary", "")
