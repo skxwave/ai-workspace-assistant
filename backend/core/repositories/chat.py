@@ -40,6 +40,17 @@ class ChatRepository:
         newest_first = list(result.scalars().all())
         return list(reversed(newest_first)), total or 0
 
+    async def owns(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        chat_id: uuid.UUID,
+    ) -> bool:
+        found = await self.session.scalar(
+            select(Chat.id).where(Chat.owner_id == owner_id, Chat.id == chat_id)
+        )
+        return found is not None
+
     async def delete_for_owner(
         self,
         *,

@@ -15,6 +15,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 
+from backend.agent.utils.events import StreamEvent, error_event
 from backend.auth.dependencies import get_current_active_user
 from backend.core.models.user import User
 from backend.core.services.chat import ChatService, TurnResult, get_chat_service
@@ -26,6 +27,7 @@ from .schemas import (
     ConfirmRequest,
     MessageOut,
     MessagesPage,
+    PendingConfirmation,
     ToolCallOut,
 )
 
@@ -34,9 +36,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Chat"])
 
 
+def _sse(event: StreamEvent) -> str:
+    return f"data: {json.dumps(event.as_frame())}\n\n"
+
+
 def _reply(result: TurnResult) -> ChatReply:
     return ChatReply(
         message=result.reply,
+        steps=[ToolCallOut(**call) for call in result.steps],
         pending_confirmation=[ToolCallOut(**call) for call in result.pending_calls],
     )
 
@@ -86,6 +93,16 @@ async def chat_invoke(
         attached_file_ids=request.attached_file_ids,
     )
     return _reply(result)
+
+
+@router.get("/{chat_id}/confirmation", response_model=PendingConfirmation)
+async def get_pending_confirmation(
+    chat_id: UUID,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+):
+    calls = await chat_service.pending_confirmation(chat_id=chat_id)
+    return PendingConfirmation(calls=[ToolCallOut(**call) for call in calls])
 
 
 @router.post("/{chat_id}/confirm", response_model=ChatReply)
@@ -149,13 +166,19 @@ async def chat_stream(
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
     async def event_generator():
-        async for content in chat_service.stream_message(
-            owner_id=current_user.id,
-            chat_id=chat_id,
-            message=request.message,
-            attached_file_ids=request.attached_file_ids,
-        ):
-            yield content
+        try:
+            async for event in chat_service.stream_message(
+                owner_id=current_user.id,
+                chat_id=chat_id,
+                message=request.message,
+                attached_file_ids=request.attached_file_ids,
+            ):
+                yield _sse(event)
+        except HTTPException as error:
+            yield _sse(error_event(error.detail))
+        except Exception:
+            logger.exception("Streaming failed for user %s", current_user.id)
+            yield _sse(error_event("The assistant failed to answer."))
 
     return StreamingResponse(
         event_generator(),
@@ -209,25 +232,17 @@ async def websocket_endpoint(
                 )
 
             try:
-                async for content in stream:
-                    await websocket.send_json({"content": content})
+                async for event in stream:
+                    await websocket.send_json(event.as_frame())
             except WebSocketDisconnect:
                 raise
             except HTTPException as error:
-                await websocket.send_json({"type": "error", "detail": error.detail})
+                await websocket.send_json(error_event(error.detail).as_frame())
             except Exception:
                 logger.exception("Streaming failed for user %s", current_user.id)
                 await websocket.send_json(
-                    {"type": "error", "detail": "The assistant failed to answer."}
+                    error_event("The assistant failed to answer.").as_frame()
                 )
-            else:
-                pending = await chat_service.pending_calls(chat_id=chat_id)
-                if pending:
-                    await websocket.send_json(
-                        {"type": "confirmation_required", "calls": list(pending)}
-                    )
-                else:
-                    await websocket.send_json({"type": "end"})
     except WebSocketDisconnect:
         logger.info("Client disconnected from thread: %s", current_user.id)
 

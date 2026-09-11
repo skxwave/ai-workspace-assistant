@@ -19,8 +19,13 @@ class ToolCallOut(BaseModel):
     args: dict[str, Any]
 
 
+class PendingConfirmation(BaseModel):
+    calls: list[ToolCallOut] = []
+
+
 class ChatReply(BaseModel):
     message: str | None = None
+    steps: list[ToolCallOut] = []
     pending_confirmation: list[ToolCallOut] = []
 
 

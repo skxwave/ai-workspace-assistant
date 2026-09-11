@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, UploadFile, status
-from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain.messages import AIMessage, HumanMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph.state import CompiledStateGraph
@@ -21,6 +21,7 @@ from backend.agent.integrations import (
     ToolBundle,
     mcp_tool_manager,
 )
+from backend.agent.utils.events import StreamEvent, end_event, graph_events
 from backend.agent.utils.ingestion import (
     chunk_documents,
     get_loader,
@@ -47,9 +48,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class TurnResult:
-    """Either the assistant's answer, or the write calls waiting on the user."""
+    """The assistant's answer plus the steps it took, or the calls waiting on the user."""
 
     reply: str | None = None
+    steps: tuple[dict, ...] = ()
     pending_calls: tuple[dict, ...] = ()
 
 
@@ -133,7 +135,7 @@ class ChatService:
         message: str,
         attached_file_ids: list[str] | None,
     ) -> TurnResult:
-        await self._reject_while_pending(chat_id)
+        await self._guard_new_turn(chat_id)
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.HUMAN,
@@ -156,7 +158,7 @@ class ChatService:
         chat_id: UUID,
         approved: bool,
     ) -> TurnResult:
-        await self._require_pending(chat_id)
+        await self._guard_resume(chat_id)
         return await self._run(
             owner_id=owner_id,
             chat_id=chat_id,
@@ -170,15 +172,15 @@ class ChatService:
         chat_id: UUID,
         message: str,
         attached_file_ids: list[str] | None,
-    ) -> AsyncIterator[str]:
-        await self._reject_while_pending(chat_id)
+    ) -> AsyncIterator[StreamEvent]:
+        await self._guard_new_turn(chat_id)
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.HUMAN,
             content=message,
             chat_id=chat_id,
         )
-        async for text in self._stream(
+        async for event in self._events(
             owner_id=owner_id,
             chat_id=chat_id,
             graph_input={
@@ -186,7 +188,7 @@ class ChatService:
                 "attached_file_ids": attached_file_ids,
             },
         ):
-            yield text
+            yield event
 
     async def resume_stream(
         self,
@@ -194,22 +196,31 @@ class ChatService:
         owner_id: UUID,
         chat_id: UUID,
         approved: bool,
-    ) -> AsyncIterator[str]:
-        await self._require_pending(chat_id)
-        async for text in self._stream(
+    ) -> AsyncIterator[StreamEvent]:
+        await self._guard_resume(chat_id)
+        async for event in self._events(
             owner_id=owner_id,
             chat_id=chat_id,
             graph_input=Command(resume=approved),
         ):
-            yield text
+            yield event
 
-    async def pending_calls(
+    async def pending_confirmation(
         self,
         *,
         chat_id: UUID,
     ) -> tuple[dict, ...]:
+        """Lets a client that lost its stream (reload, reconnect) pick the turn back up."""
+        await self._assert_owner(chat_id)
+        return await self._pending_calls(chat_id)
+
+    async def _pending_calls(self, chat_id: UUID) -> tuple[dict, ...]:
         state = await self.agent.aget_state(config=self._config(chat_id))
         return _confirmation_calls(state.interrupts)
+
+    async def _assert_owner(self, chat_id: UUID) -> None:
+        if not await self.chat_repo.owns(owner_id=self.owner_id, chat_id=chat_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Chat not found")
 
     async def _run(
         self,
@@ -218,52 +229,55 @@ class ChatService:
         chat_id: UUID,
         graph_input: dict | Command,
     ) -> TurnResult:
-        async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
-            await self._persist_expired(bundle.integrations)
-            result = await self.agent.ainvoke(
-                input=graph_input,
-                config=self._config(chat_id, bundle),
-            )
+        reply_chunks: list[str] = []
+        steps: list[dict] = []
+        pending: tuple[dict, ...] = ()
 
-        pending = _confirmation_calls(result.get("__interrupt__"))
-        if pending:
-            return TurnResult(pending_calls=pending)
+        async for event in self._events(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input=graph_input,
+        ):
+            if event.type == "token":
+                reply_chunks.append(event.data["content"])
+            elif event.type == "tool_call":
+                steps.append(event.data)
+            elif event.type == "confirmation_required":
+                pending = tuple(event.data["calls"])
 
-        reply = result["messages"][-1].text
-        await self._save_reply(owner_id=owner_id, chat_id=chat_id, reply=reply)
-        return TurnResult(reply=reply)
+        return TurnResult(
+            reply="".join(reply_chunks) or None,
+            steps=tuple(steps),
+            pending_calls=pending,
+        )
 
-    async def _stream(
+    async def _events(
         self,
         *,
         owner_id: UUID,
         chat_id: UUID,
         graph_input: dict | Command,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamEvent]:
+        """Runs one turn, emitting every step; the reply is persisted when it ends."""
         reply_chunks: list[str] = []
+
         async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
             await self._persist_expired(bundle.integrations)
             async for chunk in self.agent.astream(
                 input=graph_input,
                 config=self._config(chat_id, bundle),
-                stream_mode="messages",
+                stream_mode=["messages", "updates"],
                 version="v2",
             ):
-                msg, _ = chunk["data"]
-
-                if not isinstance(msg, (AIMessage, AIMessageChunk)):
-                    continue
-
-                text = msg.text
-                if not text:
-                    continue
-
-                reply_chunks.append(text)
-                yield text
+                for event in graph_events(chunk):
+                    if event.type == "token":
+                        reply_chunks.append(event.data["content"])
+                    yield event
 
         reply = "".join(reply_chunks)
         if reply:
             await self._save_reply(owner_id=owner_id, chat_id=chat_id, reply=reply)
+        yield end_event()
 
     async def _save_reply(
         self,
@@ -284,15 +298,17 @@ class ChatService:
             chat_id=chat_id,
         )
 
-    async def _reject_while_pending(self, chat_id: UUID) -> None:
-        if await self.pending_calls(chat_id=chat_id):
+    async def _guard_new_turn(self, chat_id: UUID) -> None:
+        await self._assert_owner(chat_id)
+        if await self._pending_calls(chat_id):
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "A tool call in this chat is awaiting confirmation",
             )
 
-    async def _require_pending(self, chat_id: UUID) -> None:
-        if not await self.pending_calls(chat_id=chat_id):
+    async def _guard_resume(self, chat_id: UUID) -> None:
+        await self._assert_owner(chat_id)
+        if not await self._pending_calls(chat_id):
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "No tool call is awaiting confirmation in this chat",
