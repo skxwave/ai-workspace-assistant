@@ -49,7 +49,9 @@ class SchemaCache:
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def definitions(
-        self, provider: IntegrationProvider, token: str
+        self,
+        provider: IntegrationProvider,
+        token: str,
     ) -> list[McpTool]:
         key = self._key(provider, token)
         cached = self._local.get(key)
@@ -64,7 +66,11 @@ class SchemaCache:
             self._local.set(key, definitions, self._ttl_seconds)
             return definitions
 
-    async def refresh(self, provider: IntegrationProvider, token: str) -> list[McpTool]:
+    async def refresh(
+        self,
+        provider: IntegrationProvider,
+        token: str,
+    ) -> list[McpTool]:
         key = self._key(provider, token)
         async with self._lock_for(key):
             definitions = await self._discover(provider, token)
@@ -92,20 +98,31 @@ class SchemaCache:
                         "Scheduled schema refresh failed for %s", provider.name
                     )
 
-    def _key(self, provider: IntegrationProvider, token: str) -> str:
+    def _key(
+        self,
+        provider: IntegrationProvider,
+        token: str,
+    ) -> str:
         suffix = _connection_fingerprint(provider)
         if provider.per_user_schema:
             suffix = f"{suffix}:{_fingerprint(token)}"
         return f"{provider.name}:{suffix}"
 
-    def _lock_for(self, key: str) -> asyncio.Lock:
+    def _lock_for(
+        self,
+        key: str,
+    ) -> asyncio.Lock:
         lock = self._locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
             self._locks[key] = lock
         return lock
 
-    def _seed_token(self, provider: IntegrationProvider, token: str) -> str:
+    def _seed_token(
+        self,
+        provider: IntegrationProvider,
+        token: str,
+    ) -> str:
         if provider.per_user_schema:
             return token
         return self._discovery_tokens.get(provider.name) or token
@@ -146,7 +163,10 @@ class SchemaCache:
         logger.info("Discovered %d tools for %s", len(definitions), provider.name)
         return definitions
 
-    async def _await_peer(self, key: str) -> list[McpTool] | None:
+    async def _await_peer(
+        self,
+        key: str,
+    ) -> list[McpTool] | None:
         for _ in range(PEER_POLL_ATTEMPTS):
             await asyncio.sleep(PEER_POLL_INTERVAL)
             definitions = await self._read_redis(key)
@@ -154,7 +174,10 @@ class SchemaCache:
                 return definitions
         return None
 
-    async def _read_redis(self, key: str) -> list[McpTool] | None:
+    async def _read_redis(
+        self,
+        key: str,
+    ) -> list[McpTool] | None:
         try:
             raw = await self._redis.get(SCHEMA_KEY.format(key=key))
         except RedisError:
@@ -164,11 +187,15 @@ class SchemaCache:
             return None
         try:
             return [McpTool.model_validate(item) for item in json.loads(raw)]
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             logger.warning("Discarding unreadable cached schema for %s", key)
             return None
 
-    async def _write_redis(self, key: str, definitions: list[McpTool]) -> None:
+    async def _write_redis(
+        self,
+        key: str,
+        definitions: list[McpTool],
+    ) -> None:
         payload = json.dumps([item.model_dump(mode="json") for item in definitions])
         try:
             await self._redis.set(
@@ -179,7 +206,10 @@ class SchemaCache:
         except RedisError:
             logger.warning("Redis unavailable while caching %s schema", key)
 
-    async def _acquire_redis_lock(self, key: str) -> bool:
+    async def _acquire_redis_lock(
+        self,
+        key: str,
+    ) -> bool:
         try:
             acquired = await self._redis.set(
                 LOCK_KEY.format(key=key),
@@ -191,7 +221,10 @@ class SchemaCache:
             return True
         return bool(acquired)
 
-    async def _release_redis_lock(self, key: str) -> None:
+    async def _release_redis_lock(
+        self,
+        key: str,
+    ) -> None:
         try:
             await self._redis.delete(LOCK_KEY.format(key=key))
         except RedisError:

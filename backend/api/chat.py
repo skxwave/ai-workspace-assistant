@@ -186,20 +186,6 @@ async def websocket_endpoint(
         logger.info("Client disconnected from thread: %s", current_user.id)
 
 
-@router.get("/{chat_id}/debug/state")
-async def graph_state(
-    chat_id: UUID,
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    chat_service: Annotated[ChatService, Depends(get_chat_service)],
-):
-    state = await chat_service.graph_state(chat_id=chat_id)
-    tokens = await chat_service.token_count(chat_id=chat_id)
-    return {
-        "state": state,
-        "tokens": tokens,
-    }
-
-
 @router.post("/documents", status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile,

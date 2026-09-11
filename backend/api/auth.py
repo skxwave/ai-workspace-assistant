@@ -5,11 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 import httpx
+import jwt
 
 from backend.agent.integrations import integration_registry
 from backend.core import settings
 from backend.core.constants import IntegrationStatus
 from backend.auth.dependencies import get_current_active_user, oauth2_scheme
+from backend.auth.rate_limit import rate_limit
 from backend.auth.schemas import (
     IntegrationsStatus,
     RefreshRequest,
@@ -17,6 +19,7 @@ from backend.auth.schemas import (
     UserCreate,
     UserRead,
 )
+from backend.auth.security import create_github_oauth_state, decode_token
 from backend.core.models.user import User
 from backend.core.repositories.user_integration import (
     UserIntegrationRepository,
@@ -31,6 +34,7 @@ router = APIRouter(tags=["Auth"])
     "/register",
     response_model=TokenPair,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("register", limit=5, window_seconds=60))],
 )
 async def register(
     payload: UserCreate,
@@ -44,7 +48,11 @@ async def register(
     return auth_service.issue_token_pair(user)
 
 
-@router.post("/login", response_model=TokenPair)
+@router.post(
+    "/login",
+    response_model=TokenPair,
+    dependencies=[Depends(rate_limit("login", limit=5, window_seconds=60))],
+)
 async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
@@ -56,7 +64,11 @@ async def login(
     return auth_service.issue_token_pair(user)
 
 
-@router.post("/refresh", response_model=TokenPair)
+@router.post(
+    "/refresh",
+    response_model=TokenPair,
+    dependencies=[Depends(rate_limit("refresh", limit=20, window_seconds=60))],
+)
 async def refresh(
     payload: RefreshRequest,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
@@ -114,12 +126,16 @@ async def disconnect_integration(
 async def get_github_url(
     current_user: Annotated[User, Depends(get_current_active_user)],
 ):
+    state = create_github_oauth_state(current_user.id)
     return {
-        "url": f"https://github.com/login/oauth/authorize?client_id={settings.tools.github_client_id}&redirect_uri={settings.tools.github_redirect_uri}&scope=repo,user&state={current_user.id}"
+        "url": f"https://github.com/login/oauth/authorize?client_id={settings.tools.github_client_id}&redirect_uri={settings.tools.github_redirect_uri}&scope=repo,user&state={state}"
     }
 
 
-@router.get("/github/callback")
+@router.get(
+    "/github/callback",
+    dependencies=[Depends(rate_limit("github_callback", limit=10, window_seconds=60))],
+)
 async def github_callback(
     integration_repo: Annotated[
         UserIntegrationRepository, Depends(get_user_integration_repository)
@@ -127,6 +143,14 @@ async def github_callback(
     code: str = Query(),
     state: str = Query(),
 ):
+    try:
+        payload = decode_token(state)
+    except jwt.PyJWTError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired state")
+    if payload.get("type") != "github_oauth_state":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired state")
+    user_id = UUID(payload["sub"])
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://github.com/login/oauth/access_token",
@@ -148,7 +172,7 @@ async def github_callback(
                 detail="Failed to retrieve token from GitHub",
             )
 
-        await integration_repo.upsert(UUID(state), "github", access_token)
+        await integration_repo.upsert(user_id, "github", access_token)
 
         return RedirectResponse(
             settings.app.frontend_url,

@@ -34,7 +34,7 @@ class LLMs(BaseModel):
 
 
 class App(BaseModel):
-    debug: bool = True
+    debug: bool = False
     title: str = "AI Workspace Assistant"
     description: str = "Internal AI assistant for engineers"
     version: str = "0.1.0"
@@ -64,6 +64,7 @@ class Postgres(BaseModel):
 class Redis(BaseModel):
     host: str = "localhost"
     port: int = 6379
+    password: str | None = None
 
 
 class DB(BaseModel):

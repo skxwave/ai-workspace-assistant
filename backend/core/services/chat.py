@@ -64,7 +64,11 @@ class ChatService:
         self.owner_id = owner_id
         self.langfuse_handler = langfuse_handler
 
-    def _config(self, chat_id: UUID, bundle: ToolBundle | None = None) -> dict:
+    def _config(
+        self,
+        chat_id: UUID,
+        bundle: ToolBundle | None = None,
+    ) -> dict:
         integrations = bundle.integrations if bundle else ()
         return {
             "configurable": {
