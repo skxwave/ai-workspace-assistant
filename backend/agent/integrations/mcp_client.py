@@ -1,3 +1,5 @@
+from typing import Any, Protocol
+
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.interceptors import ToolCallInterceptor
 from langchain_mcp_adapters.sessions import Connection, create_session
@@ -6,6 +8,10 @@ from mcp import ClientSession
 from mcp.types import Tool as McpTool
 
 MAX_TOOL_PAGES = 100
+
+
+class ToolSession(Protocol):
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None, **kw: Any): ...
 
 
 def authenticated_connection(
@@ -41,21 +47,16 @@ async def discover_tool_definitions(connection: Connection) -> list[McpTool]:
 def hydrate_tools(
     definitions: list[McpTool],
     *,
-    connection: Connection,
     server_name: str,
     interceptors: list[ToolCallInterceptor],
     tool_name_prefix: bool,
+    session: ToolSession,
 ) -> list[BaseTool]:
-    """Build LangChain tools from cached definitions. No network access.
-
-    `connection` carries no credentials; each call's interceptor chain supplies
-    the invoking user's token.
-    """
+    """Bind cached definitions to an already-authenticated MCP session."""
     return [
         convert_mcp_tool_to_langchain_tool(
-            None,
+            session,
             definition,
-            connection=connection,
             tool_interceptors=interceptors,
             server_name=server_name,
             tool_name_prefix=tool_name_prefix,

@@ -2,22 +2,26 @@ import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, UploadFile, status
-from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain.messages import AIMessage, HumanMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
 
 from backend.agent.agent import get_shared_agent
 from backend.agent.integrations import (
-    INTEGRATION_TOKENS_KEY,
     IntegrationState,
+    McpToolManager,
+    ToolBundle,
     mcp_tool_manager,
 )
+from backend.agent.utils.events import StreamEvent, end_event, graph_events
 from backend.agent.utils.ingestion import (
     chunk_documents,
     get_loader,
@@ -42,35 +46,79 @@ from backend.core.repositories import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class TurnResult:
+    """The assistant's answer plus the steps it took, or the calls waiting on the user."""
+
+    reply: str | None = None
+    steps: tuple[dict, ...] = ()
+    pending_calls: tuple[dict, ...] = ()
+
+
+def _confirmation_calls(interrupts: Any) -> tuple[dict, ...]:
+    for item in interrupts or ():
+        if isinstance(item.value, dict):
+            return tuple(item.value.get("calls", ()))
+    return ()
+
+
 class ChatService:
     def __init__(
         self,
         agent: CompiledStateGraph,
         chat_repo: ChatRepository,
         messages_repo: ChatMessageRepository,
-        tools: list,
-        integrations: tuple[IntegrationState, ...],
+        integration_repo: UserIntegrationRepository,
+        tool_manager: McpToolManager,
         integration_tokens: dict[str, str],
+        owner_id: UUID,
         langfuse_handler: BaseCallbackHandler,
     ):
         self.agent = agent
         self.chat_repo = chat_repo
         self.messages_repo = messages_repo
-        self.tools = tools
-        self.integrations = integrations
+        self.integration_repo = integration_repo
+        self.tool_manager = tool_manager
         self.integration_tokens = integration_tokens
+        self.owner_id = owner_id
         self.langfuse_handler = langfuse_handler
 
-    def _config(self, chat_id: UUID) -> dict:
+    def _config(
+        self,
+        chat_id: UUID,
+        bundle: ToolBundle | None = None,
+    ) -> dict:
+        integrations = bundle.integrations if bundle else ()
         return {
             "configurable": {
                 "thread_id": chat_id,
-                "tools": self.tools,
-                "integrations": self.integrations,
-                INTEGRATION_TOKENS_KEY: self.integration_tokens,
+                "tools": bundle.tools if bundle else [],
+                "integrations": integrations,
+                "confirm_tools": bundle.confirm_tools if bundle else frozenset(),
             },
             "callbacks": [self.langfuse_handler],
+            "run_name": "workspace-chat",
+            "metadata": {
+                "langfuse_trace_name": "workspace-chat",
+                "langfuse_session_id": str(chat_id),
+                "langfuse_user_id": str(self.owner_id),
+                "langfuse_tags": [
+                    state.name
+                    for state in integrations
+                    if state.status is IntegrationStatus.CONNECTED
+                ],
+            },
         }
+
+    async def _persist_expired(
+        self, integrations: tuple[IntegrationState, ...]
+    ) -> None:
+        for state in integrations:
+            if state.status is IntegrationStatus.EXPIRED:
+                await self.integration_repo.set_status(
+                    self.owner_id, state.name, IntegrationStatus.EXPIRED
+                )
+                self.integration_tokens.pop(state.name, None)
 
     async def create_chat(
         self,
@@ -86,22 +134,158 @@ class ChatService:
         chat_id: UUID,
         message: str,
         attached_file_ids: list[str] | None,
-    ) -> str:
+    ) -> TurnResult:
+        await self._guard_new_turn(chat_id)
         await self.messages_repo.save(
             owner_id=owner_id,
             role=MessageRole.HUMAN,
             content=message,
             chat_id=chat_id,
         )
-
-        result = await self.agent.ainvoke(
-            input={
+        return await self._run(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input={
                 "messages": [HumanMessage(content=message)],
                 "attached_file_ids": attached_file_ids,
             },
-            config=self._config(chat_id),
         )
-        reply = result["messages"][-1].text
+
+    async def resume_message(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        approved: bool,
+    ) -> TurnResult:
+        await self._guard_resume(chat_id)
+        return await self._run(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input=Command(resume=approved),
+        )
+
+    async def stream_message(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        message: str,
+        attached_file_ids: list[str] | None,
+    ) -> AsyncIterator[StreamEvent]:
+        await self._guard_new_turn(chat_id)
+        await self.messages_repo.save(
+            owner_id=owner_id,
+            role=MessageRole.HUMAN,
+            content=message,
+            chat_id=chat_id,
+        )
+        async for event in self._events(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input={
+                "messages": [HumanMessage(content=message)],
+                "attached_file_ids": attached_file_ids,
+            },
+        ):
+            yield event
+
+    async def resume_stream(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        approved: bool,
+    ) -> AsyncIterator[StreamEvent]:
+        await self._guard_resume(chat_id)
+        async for event in self._events(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input=Command(resume=approved),
+        ):
+            yield event
+
+    async def pending_confirmation(
+        self,
+        *,
+        chat_id: UUID,
+    ) -> tuple[dict, ...]:
+        """Lets a client that lost its stream (reload, reconnect) pick the turn back up."""
+        await self._assert_owner(chat_id)
+        return await self._pending_calls(chat_id)
+
+    async def _pending_calls(self, chat_id: UUID) -> tuple[dict, ...]:
+        state = await self.agent.aget_state(config=self._config(chat_id))
+        return _confirmation_calls(state.interrupts)
+
+    async def _assert_owner(self, chat_id: UUID) -> None:
+        if not await self.chat_repo.owns(owner_id=self.owner_id, chat_id=chat_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Chat not found")
+
+    async def _run(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        graph_input: dict | Command,
+    ) -> TurnResult:
+        reply_chunks: list[str] = []
+        steps: list[dict] = []
+        pending: tuple[dict, ...] = ()
+
+        async for event in self._events(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            graph_input=graph_input,
+        ):
+            if event.type == "token":
+                reply_chunks.append(event.data["content"])
+            elif event.type == "tool_call":
+                steps.append(event.data)
+            elif event.type == "confirmation_required":
+                pending = tuple(event.data["calls"])
+
+        return TurnResult(
+            reply="".join(reply_chunks) or None,
+            steps=tuple(steps),
+            pending_calls=pending,
+        )
+
+    async def _events(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        graph_input: dict | Command,
+    ) -> AsyncIterator[StreamEvent]:
+        """Runs one turn, emitting every step; the reply is persisted when it ends."""
+        reply_chunks: list[str] = []
+
+        async with self.tool_manager.open_tools(self.integration_tokens) as bundle:
+            await self._persist_expired(bundle.integrations)
+            async for chunk in self.agent.astream(
+                input=graph_input,
+                config=self._config(chat_id, bundle),
+                stream_mode=["messages", "updates"],
+                version="v2",
+            ):
+                for event in graph_events(chunk):
+                    if event.type == "token":
+                        reply_chunks.append(event.data["content"])
+                    yield event
+
+        reply = "".join(reply_chunks)
+        if reply:
+            await self._save_reply(owner_id=owner_id, chat_id=chat_id, reply=reply)
+        yield end_event()
+
+    async def _save_reply(
+        self,
+        *,
+        owner_id: UUID,
+        chat_id: UUID,
+        reply: str,
+    ) -> None:
         logger.info(
             "AI response for chat %s used ~%d tokens",
             chat_id,
@@ -113,57 +297,21 @@ class ChatService:
             content=reply,
             chat_id=chat_id,
         )
-        return reply
 
-    async def stream_message(
-        self,
-        *,
-        owner_id: UUID,
-        chat_id: UUID,
-        message: str,
-        attached_file_ids: list[str] | None,
-    ) -> AsyncIterator[str]:
-        await self.messages_repo.save(
-            owner_id=owner_id,
-            role=MessageRole.HUMAN,
-            content=message,
-            chat_id=chat_id,
-        )
-
-        reply_chunks: list[str] = []
-        async for chunk in self.agent.astream(
-            input={
-                "messages": [HumanMessage(content=message)],
-                "attached_file_ids": attached_file_ids,
-            },
-            config=self._config(chat_id),
-            stream_mode="messages",
-            version="v2",
-        ):
-            msg, _ = chunk["data"]
-
-            if not isinstance(msg, (AIMessage, AIMessageChunk)):
-                continue
-
-            text = msg.text
-            if not text:
-                continue
-
-            reply_chunks.append(text)
-            yield text
-
-        reply = "".join(reply_chunks)
-        if reply:
-            logger.info(
-                "AI response for chat %s used ~%d tokens",
-                chat_id,
-                count_tokens_approximately([AIMessage(content=reply)]),
+    async def _guard_new_turn(self, chat_id: UUID) -> None:
+        await self._assert_owner(chat_id)
+        if await self._pending_calls(chat_id):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "A tool call in this chat is awaiting confirmation",
             )
-            await self.messages_repo.save(
-                owner_id=owner_id,
-                role=MessageRole.AI,
-                content=reply,
-                chat_id=chat_id,
+
+    async def _guard_resume(self, chat_id: UUID) -> None:
+        await self._assert_owner(chat_id)
+        if not await self._pending_calls(chat_id):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "No tool call is awaiting confirmation in this chat",
             )
 
     async def get_chat_history(
@@ -281,21 +429,13 @@ async def get_chat_service(
         UserIntegrationRepository, Depends(get_user_integration_repository)
     ],
 ) -> ChatService:
-    tokens = await integration_repo.get_tokens(current_user.id)
-    bundle = await mcp_tool_manager.build_bundle(tokens)
-
-    for name in bundle.with_status(IntegrationStatus.EXPIRED):
-        await integration_repo.set_status(
-            current_user.id, name, IntegrationStatus.EXPIRED
-        )
-        tokens.pop(name, None)
-
     return ChatService(
         agent=await get_shared_agent(),
         chat_repo=chat_repo,
         messages_repo=messages_repo,
-        tools=bundle.tools,
-        integrations=bundle.integrations,
-        integration_tokens=tokens,
+        integration_repo=integration_repo,
+        tool_manager=mcp_tool_manager,
+        integration_tokens=await integration_repo.get_tokens(current_user.id),
+        owner_id=current_user.id,
         langfuse_handler=get_langfuse_handler(),
     )

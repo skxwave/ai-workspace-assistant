@@ -4,12 +4,14 @@ from pydantic_settings import SettingsConfigDict, BaseSettings
 
 class Agent(BaseModel):
     is_in_memory: bool = True
+    max_tool_iterations: int = 10
 
 
 class Tools(BaseModel):
     github_client_id: str
     github_client_secret: str
     github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
+    github_toolsets: list[str] = ["context", "repos", "pull_requests", "issues"]
 
 
 class Integrations(BaseModel):
@@ -28,10 +30,12 @@ class LLMs(BaseModel):
     openai_gpt_5_4: str = "gpt-5.4"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_api_key: str
+    openai_chat_temperature: float = 0.2
+    openai_summarize_temperature: float = 0.5
 
 
 class App(BaseModel):
-    debug: bool = True
+    debug: bool = False
     title: str = "AI Workspace Assistant"
     description: str = "Internal AI assistant for engineers"
     version: str = "0.1.0"
@@ -61,6 +65,7 @@ class Postgres(BaseModel):
 class Redis(BaseModel):
     host: str = "localhost"
     port: int = 6379
+    password: str | None = None
 
 
 class DB(BaseModel):

@@ -8,6 +8,7 @@ from langchain_core.messages import (
     ToolMessage,
     trim_messages,
 )
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -15,9 +16,11 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import interrupt
 
 from backend.agent.memory import get_shared_checkpointer, get_shared_store
-from backend.agent.utils.prompts import integration_notice, system_prompt_template
+from backend.agent.utils.confirmation import declined_messages, pending_confirmations
+from backend.agent.utils.prompts import system_prompt_template, turn_context_message
 from backend.agent.utils.state import MessagesState
 from backend.core import settings
 
@@ -28,17 +31,17 @@ class WorkspaceAgent:
     def __init__(self) -> None:
         self._chat_llm = self._create_llm(
             model=settings.llms.openai_gpt_5_4,
-            temperature=0.8,
+            temperature=settings.llms.openai_chat_temperature,
         )
         self._summarize_llm = self._create_llm(
             model=settings.llms.openai_gpt_5_mini,
-            temperature=0.7,
+            temperature=settings.llms.openai_summarize_temperature,
         )
 
         self._trimmer = trim_messages(
             max_tokens=16000,
             strategy="last",
-            token_counter=self._chat_llm,
+            token_counter=count_tokens_approximately,
             include_system=True,
             allow_partial=False,
             start_on="human",
@@ -54,35 +57,41 @@ class WorkspaceAgent:
 
     async def _chat_node(self, state: MessagesState, config: RunnableConfig) -> dict:
         configurable = config["configurable"]
-        trimmed_messages = await self._trimmer.ainvoke(state["messages"])
+        history = await self._trimmer.ainvoke(state["messages"])
 
-        summary = state.get("summary", "")
-        if summary:
-            trimmed_messages = [
-                SystemMessage(content=f"Summary of earlier conversation:\n{summary}")
-            ] + trimmed_messages
-
-        files = state.get("attached_file_ids", None)
-        if files:
-            trimmed_messages = [
-                SystemMessage(
-                    content=f"User uploaded new files (ids: {files}), please use "
-                    f"`search_user_files` with file_ids={files} to look them up."
-                )
-            ] + trimmed_messages
-
-        notice = integration_notice(configurable.get("integrations", ()))
-        if notice:
-            trimmed_messages = [SystemMessage(content=notice)] + trimmed_messages
-
-        chain = system_prompt_template | self._chat_llm.bind_tools(
-            tools=configurable["tools"]
+        tools_exhausted = (
+            state.get("tool_call_count", 0) >= settings.agent.max_tool_iterations
         )
-        response = await chain.ainvoke({"messages": trimmed_messages})
+        tools = [] if tools_exhausted else configurable["tools"]
+
+        context = turn_context_message(
+            summary=state.get("summary", ""),
+            attached_file_ids=state.get("attached_file_ids"),
+            integrations=configurable.get("integrations", ()),
+            tools_exhausted=tools_exhausted,
+        )
+        messages = [*history, context] if context else history
+
+        chain = system_prompt_template | self._chat_llm.bind_tools(tools=tools)
+        response = await chain.ainvoke({"messages": messages})
         return {"messages": [response], "attached_file_ids": None}
 
     async def _tools_node(self, state: MessagesState, config: RunnableConfig) -> dict:
-        return await ToolNode(config["configurable"]["tools"]).ainvoke(state, config)
+        configurable = config["configurable"]
+        last_message = state["messages"][-1]
+        rounds = state.get("tool_call_count", 0) + 1
+
+        awaiting = pending_confirmations(
+            last_message, configurable.get("confirm_tools", frozenset())
+        )
+        if awaiting and not interrupt({"calls": awaiting}):
+            return {
+                "messages": declined_messages(last_message),
+                "tool_call_count": rounds,
+            }
+
+        result = await ToolNode(configurable["tools"]).ainvoke(state, config)
+        return {**result, "tool_call_count": rounds}
 
     async def _summarize_node(self, state: MessagesState) -> dict:
         summary = state.get("summary", "")

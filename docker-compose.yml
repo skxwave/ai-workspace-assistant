@@ -10,7 +10,7 @@ services:
     env_file:
       - .env
     ports:
-      - 5432:5432
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./.data/postgres:/var/lib/postgresql
     healthcheck:
@@ -24,14 +24,15 @@ services:
   redis:
     image: redis:8
     container_name: redis
+    command: ["redis-server", "--requirepass", "${BOT__DB__REDIS__PASSWORD}"]
     env_file:
       - .env
     ports:
-      - 6379:6379
+      - "127.0.0.1:6379:6379"
     volumes:
       - ./.data/redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${BOT__DB__REDIS__PASSWORD}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -43,8 +44,8 @@ services:
     container_name: qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"  # HTTP
-      - "6334:6334"  # gRPC
+      - "127.0.0.1:6333:6333"  # HTTP
+      - "127.0.0.1:6334:6334"  # gRPC
     environment:
       - QDRANT__SERVICE__API_KEY=${BOT__DB__QDRANT__KEY}
     env_file:
